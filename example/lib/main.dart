@@ -11,13 +11,15 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     // 1. Generate dummy data for demonstration (1,000 rows)
-    final data = List.generate(1000, (index) => [
-      index,
-      'Event #$index',
-      'ActionType.${index % 2 == 0 ? 'CLICK' : 'HOVER'}',
-      '${(index * 1.5).toStringAsFixed(1)} ms',
-      index % 3 == 0 ? 'ERROR' : 'OK',
-    ]);
+    final data = List.generate(
+        1000,
+        (index) => [
+              index,
+              'Event #$index',
+              'ActionType.${index % 2 == 0 ? 'CLICK' : 'HOVER'}',
+              '${(index * 1.5).toStringAsFixed(1)} ms',
+              index % 3 == 0 ? 'ERROR' : 'OK',
+            ]);
 
     return Scaffold(
       backgroundColor: const Color(0xFF1E1F22), // Professional dark background
@@ -32,26 +34,36 @@ class MyApp extends StatelessWidget {
           children: [
             const Text(
               "Process Log (1,000 rows)",
-              style: TextStyle(color: Colors.white70, fontSize: 14, fontWeight: FontWeight.bold),
+              style: TextStyle(
+                  color: Colors.white70,
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 10),
             Expanded(
               // 2. Usage of DenseTable
               child: DenseTable(
-                headers: const ['ID', 'Event Name', 'Type', 'Duration', 'Status'],
+                headers: const [
+                  'ID',
+                  'Event Name',
+                  'Type',
+                  'Duration',
+                  'Status'
+                ],
                 columnWidths: const {
-                  0: 60.0,  // ID
+                  0: 60.0, // ID
                   1: 200.0, // Event Name
                   2: 150.0, // Type
                   3: 100.0, // Duration
-                  4: 80.0,  // Status
+                  4: 80.0, // Status
                 },
                 data: data,
                 // Optional: Customize style here.
                 // Default is a professional dark theme.
                 style: const DenseStyle(
                   rowHeight: 24.0,
-                  cellTextStyle: TextStyle(fontSize: 13, color: Color(0xFFBCBEC4)),
+                  cellTextStyle:
+                      TextStyle(fontSize: 13, color: Color(0xFFBCBEC4)),
                 ),
               ),
             ),

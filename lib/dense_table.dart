@@ -3,10 +3,12 @@ import 'package:flutter/material.dart';
 /// A high-density data table widget designed for professional desktop and web applications.
 ///
 /// [DenseTable] is designed to display a large amount of data in a compact layout.
+///
 /// It prioritizes information density and rendering performance.
-/// It supports virtualization for performance (handles large datasets efficiently)
+/// It uses virtualization to handle large datasets efficiently (for performance)
 /// and allows precise control over styling via [DenseStyle].
-class DenseTable extends StatelessWidget {
+
+class DenseTable extends StatefulWidget {
   /// The list of column headers.
   final List<String> headers;
 
@@ -28,29 +30,48 @@ class DenseTable extends StatelessWidget {
   });
 
   @override
+  State<DenseTable> createState() => _DenseTableState();
+}
+
+class _DenseTableState extends State<DenseTable> {
+  // Explicit ScrollControllers are required for desktop Scrollbars to work correctly.
+  final ScrollController _verticalController = ScrollController();
+  final ScrollController _horizontalController = ScrollController();
+
+  @override
+  void dispose() {
+    _verticalController.dispose();
+    _horizontalController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) => Container(
         decoration: BoxDecoration(
-          border: Border.all(color: style.borderColor),
-          color: style.backgroundColor,
+          border: Border.all(color: widget.style.borderColor),
+          color: widget.style.backgroundColor,
         ),
         child: Column(
           children: [
-            // Header area
+            // 1. Header Row (Horizontal Scroll Sync might be needed in v0.2.0)
             _buildHeaderRow(),
-            // Data area (virualization scroll)
+
+            // 2. Data Area with Virtualization (scroll)
             Expanded(
               child: Scrollbar(
+                // Connect the controller to the Scrollbar
+                controller: _verticalController,
                 thumbVisibility: true,
                 thickness: 8.0,
                 radius: Radius.zero, // Squared scrollbar for professional feel
                 child: ListView.builder(
-                  itemCount: data.length,
+                  // Connect the SAME controller to the ListView
+                  controller: _verticalController,
+                  itemCount: widget.data.length,
                   // Critical for performance: fixed height allows O(1) layout calculation
-                  itemExtent: style.rowHeight,
-                  itemBuilder: (context, index) {
-                    final rowData = data[index];
-                    return _buildDataRow(rowData, index);
-                  },
+                  itemExtent: widget.style.rowHeight,
+                  itemBuilder: (context, index) =>
+                      _buildDataRow(widget.data[index], index),
                 ),
               ),
             ),
@@ -59,27 +80,27 @@ class DenseTable extends StatelessWidget {
       );
 
   Widget _buildHeaderRow() => Container(
-        height: style.headerHeight,
+        height: widget.style.headerHeight,
         decoration: BoxDecoration(
-          color: style.headerBackgroundColor,
-          border: Border(bottom: BorderSide(color: style.borderColor)),
+          color: widget.style.headerBackgroundColor,
+          border: Border(bottom: BorderSide(color: widget.style.borderColor)),
         ),
         child: Row(
           children: List.generate(
-            headers.length,
+            widget.headers.length,
             (index) => Container(
-              width: columnWidths[index],
+              width: widget.columnWidths[index],
               decoration: BoxDecoration(
                 border: Border(
                   right: BorderSide(
-                      color: style.borderColor), // Vertical separator
+                      color: widget.style.borderColor), // Vertical separator
                 ),
               ),
-              padding: style.cellPadding,
+              padding: widget.style.cellPadding,
               alignment: Alignment.centerLeft,
               child: Text(
-                headers[index],
-                style: style.headerTextStyle,
+                widget.headers[index],
+                style: widget.style.headerTextStyle,
                 overflow: TextOverflow.ellipsis,
               ),
             ),
@@ -89,28 +110,31 @@ class DenseTable extends StatelessWidget {
 
   Widget _buildDataRow(List<dynamic> rowData, int rowIndex) {
     // Zebra striping for better readability - even/odd row background processing
-    final bgColor =
-        rowIndex % 2 == 0 ? style.backgroundColor : style.altBackgroundColor;
+    final bgColor = rowIndex % 2 == 0
+        ? widget.style.backgroundColor
+        : widget.style.altBackgroundColor;
 
     return Container(
-      height: style.rowHeight,
+      height: widget.style.rowHeight,
       color: bgColor,
       child: Row(
         children: List.generate(
           rowData.length,
           (colIndex) => Container(
-            width: columnWidths[colIndex],
+            width: widget.columnWidths[colIndex],
             decoration: BoxDecoration(
               border: Border(
-                right: BorderSide(color: style.gridColor), // vertical grid
-                bottom: BorderSide(color: style.gridColor), // horizontal grid
+                right:
+                    BorderSide(color: widget.style.gridColor), // vertical grid
+                bottom: BorderSide(
+                    color: widget.style.gridColor), // horizontal grid
               ),
             ),
-            padding: style.cellPadding,
+            padding: widget.style.cellPadding,
             alignment: Alignment.centerLeft,
             child: Text(
               rowData[colIndex].toString(),
-              style: style.cellTextStyle,
+              style: widget.style.cellTextStyle,
               maxLines: 1,
               overflow: TextOverflow.ellipsis, // text wrap
             ),

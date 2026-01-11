@@ -6,7 +6,7 @@ A high-density data table widget for Flutter, designed for professional desktop 
 
 It prioritizes information density, rendering performance, and keyboard-centric control, making it ideal for complex data tools.
 
-![Screenshot](dense_table.png)  
+![Screenshot](https://download.keyscope.dev/dense_table/screenshot/dense_table.png)  
 
 ## Features
 

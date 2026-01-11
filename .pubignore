@@ -1,0 +1,33 @@
+# Ignore hidden files and directories
+.git/
+.github/
+.idea/
+.vscode/
+.dart_tool/
+.DS_Store
+
+# Ignore build artifacts
+build/
+pubspec.lock
+
+# 3. Example folder cleanup
+example/.dart_tool/
+example/.idea/
+example/android/
+example/build/
+example/ios/
+example/linux/
+example/macos/
+example/web/
+example/windows/
+example/.gitignore
+example/.metadata
+example/analysis_options.yaml
+example/dense_table_example.iml
+example/pubspec.lock
+
+# Ignore documentation assets that are too large
+docs/images/dense_table.png
+
+# Ignore test coverage reports
+coverage/

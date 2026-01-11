@@ -1,0 +1,32 @@
+name: dense_table_example
+description: Demonstrates how to use the dense_table package.
+publish_to: 'none' # This prevents the example app from being published as a package
+# version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+  flutter: ">=3.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # flutter_localizations:
+  #   sdk: flutter
+  # cupertino_icons:
+
+  # Point to the parent directory where dense_table resides
+  dense_table:
+    path: ../
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+  dart_flutter_team_lints: ^3.5.2
+  lints: ^6.0.0
+  test: ^1.25.0
+
+flutter:
+  uses-material-design: true

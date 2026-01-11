@@ -1,0 +1,29 @@
+name: dense_table
+description: >-
+  A high-density data table widget designed for professional desktop and web applications.
+  Prioritizes performance, virtualization, and pixel-perfect control.
+version: 0.1.0
+homepage: https://github.com/infradise/dense_table
+repository: https://github.com/infradise/dense_table
+issue_tracker: https://github.com/infradise/dense_table/issues
+# documentation: https://github.com/infradise/dense_table/wiki
+
+# See https://dart.dev/tools/pub/pubspec
+# license: Apache-2.0
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+  flutter: ">=3.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+  dart_flutter_team_lints: ^3.5.2
+  lints: ^6.0.0
+  test: ^1.25.0

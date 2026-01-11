@@ -2,7 +2,7 @@ name: dense_table
 description: >-
   A high-density data table widget designed for professional desktop and web applications.
   Prioritizes performance, virtualization, and pixel-perfect control.
-version: 0.1.0
+version: 0.2.0
 homepage: https://github.com/infradise/dense_table
 repository: https://github.com/infradise/dense_table
 issue_tracker: https://github.com/infradise/dense_table/issues

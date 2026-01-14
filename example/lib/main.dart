@@ -32,7 +32,7 @@ class MyApp extends StatelessWidget {
         (index) => [
               index,
               'Event #$index',
-              'ActionType.${index % 2 == 0 ? 'CLICK' : 'HOVER'}',
+              'ActionType.${index.isEven ? 'CLICK' : 'HOVER'}',
               '${(index * 1.5).toStringAsFixed(1)} ms',
               index % 3 == 0 ? 'ERROR' : 'OK',
             ]);

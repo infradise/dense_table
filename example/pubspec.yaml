@@ -23,6 +23,9 @@ environment:
   flutter: ">=3.0.0"
 
 dependencies:
+  dense_table:
+    path: ../
+
   flutter:
     sdk: flutter
 
@@ -30,16 +33,11 @@ dependencies:
   #   sdk: flutter
   # cupertino_icons:
 
-  # Point to the parent directory where dense_table resides
-  dense_table:
-    path: ../
-
 dev_dependencies:
+  dart_flutter_team_lints: ^3.5.2
+  flutter_lints: ^6.0.0
   flutter_test:
     sdk: flutter
-  flutter_lints: ^6.0.0
-
-  dart_flutter_team_lints: ^3.5.2
   lints: ^6.0.0
   test: ^1.25.0
 

@@ -16,13 +16,15 @@
 
 import 'package:flutter/material.dart';
 
-/// A high-density data table widget designed for professional desktop and web applications.
+/// A high-density data table widget designed for professional desktop and web
+/// applications.
 ///
-/// [DenseTable] is designed to display a large amount of data in a compact layout.
+/// [DenseTable] is designed to display a large amount of data in a compact
+/// layout.
 ///
 /// It prioritizes information density and rendering performance.
-/// It uses virtualization to handle large datasets efficiently (for performance)
-/// and allows precise control over styling via [DenseStyle].
+/// It uses virtualization to handle large datasets efficiently (for
+/// performance) and allows precise control over styling via [DenseStyle].
 
 class DenseTable extends StatefulWidget {
   /// The list of column headers.
@@ -31,7 +33,8 @@ class DenseTable extends StatefulWidget {
   /// The raw data to be displayed in the table rows.
   final List<List<dynamic>> data;
 
-  /// Configuration for the table's appearance (colors, dimensions, text styles).
+  /// Configuration for the table's appearance (colors, dimensions,
+  /// text styles).
   final DenseStyle style;
 
   /// A map defining the width of each column (index -> width).
@@ -50,7 +53,8 @@ class DenseTable extends StatefulWidget {
 }
 
 class _DenseTableState extends State<DenseTable> {
-  // Explicit ScrollControllers are required for desktop Scrollbars to work correctly.
+  // Explicit ScrollControllers are required for desktop Scrollbars to work
+  // correctly.
   final ScrollController _verticalController = ScrollController();
   final ScrollController _horizontalController = ScrollController();
 
@@ -84,7 +88,8 @@ class _DenseTableState extends State<DenseTable> {
                   // Connect the SAME controller to the ListView
                   controller: _verticalController,
                   itemCount: widget.data.length,
-                  // Critical for performance: fixed height allows O(1) layout calculation
+                  // Critical for performance: fixed height allows O(1) layout
+                  // calculation
                   itemExtent: widget.style.rowHeight,
                   itemBuilder: (context, index) =>
                       _buildDataRow(widget.data[index], index),
@@ -126,7 +131,7 @@ class _DenseTableState extends State<DenseTable> {
 
   Widget _buildDataRow(List<dynamic> rowData, int rowIndex) {
     // Zebra striping for better readability - even/odd row background processing
-    final bgColor = rowIndex % 2 == 0
+    final bgColor = rowIndex.isEven
         ? widget.style.backgroundColor
         : widget.style.altBackgroundColor;
 

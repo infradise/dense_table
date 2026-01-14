@@ -40,7 +40,7 @@ class MyApp extends StatelessWidget {
     return Scaffold(
       backgroundColor: const Color(0xFF1E1F22), // Professional dark background
       appBar: AppBar(
-        title: const Text("DenseTable Example"),
+        title: const Text('DenseTable Example'),
         backgroundColor: const Color(0xFF3C3F41),
       ),
       body: Padding(
@@ -49,7 +49,7 @@ class MyApp extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              "Process Log (1,000 rows)",
+              'Process Log (1,000 rows)',
               style: TextStyle(
                   color: Colors.white70,
                   fontSize: 14,

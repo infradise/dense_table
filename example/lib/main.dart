@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-import 'package:flutter/material.dart';
 import 'package:dense_table/dense_table.dart';
+import 'package:flutter/material.dart';
 
 void main() {
   runApp(const MaterialApp(home: MyApp()));

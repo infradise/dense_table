@@ -59,6 +59,13 @@ class DenseTable extends StatefulWidget {
     this.sortCycle = DenseSortCycle.tristate,
     this.sortIconBuilder,
     this.rowSpanBuilder,
+    this.editTrigger = DenseEditTrigger.doubleTap,
+    this.canEditCell,
+    this.editValueGetter,
+    this.onCellEditCommitted,
+    this.trackDirtyCells = true,
+    this.displayDirtyText = true,
+    this.commitOnTapOutside = true,
     this.enableColumnResize = true,
     this.enableKeyboardNavigation = true,
     this.autofocus = false,
@@ -109,6 +116,13 @@ class DenseTable extends StatefulWidget {
     this.sortCycle = DenseSortCycle.tristate,
     this.sortIconBuilder,
     this.rowSpanBuilder,
+    this.editTrigger = DenseEditTrigger.doubleTap,
+    this.canEditCell,
+    this.editValueGetter,
+    this.onCellEditCommitted,
+    this.trackDirtyCells = true,
+    this.displayDirtyText = true,
+    this.commitOnTapOutside = true,
     this.enableColumnResize = true,
     this.enableKeyboardNavigation = true,
     this.autofocus = false,
@@ -195,6 +209,33 @@ class DenseTable extends StatefulWidget {
   /// Optional resolver for vertically merged cells (`RowSpan`) across
   /// consecutive visual rows.
   final DenseRowSpanResolver? rowSpanBuilder;
+
+  /// Gesture policy controlling how inline cell editing is triggered on
+  /// columns marked `editable: true`.
+  final DenseEditTrigger editTrigger;
+
+  /// Optional per-cell predicate dynamically enabling or disabling inline
+  /// editing (for example, locking system rows or null-PK records).
+  final DenseCellEditablePredicate? canEditCell;
+
+  /// Optional extractor returning the initial editable string for
+  /// `(rowIndex, columnIndex)` when inline editing starts.
+  final DenseCellEditValueGetter? editValueGetter;
+
+  /// Called whenever a modified inline cell edit passes validation and commits.
+  final DenseCellEditCommittedCallback? onCellEditCommitted;
+
+  /// Whether committed edits are recorded in `DenseTableController.dirtyCells`
+  /// and marked with a corner dirty indicator until cleared.
+  final bool trackDirtyCells;
+
+  /// Whether cells present in `DenseTableController.dirtyCells` automatically
+  /// display their staged `newText` in place of the underlying cell widget.
+  final bool displayDirtyText;
+
+  /// Whether clicking outside the active inline cell editor automatically
+  /// validates and commits the pending edit.
+  final bool commitOnTapOutside;
 
   /// Whether dragging column header borders resizes columns interactively.
   final bool enableColumnResize;
@@ -305,9 +346,21 @@ class _DenseTableState extends State<DenseTable> {
 
   bool _isSyncingHorizontal = false;
   double _lastBodyViewportHeight = 240.0;
+  double _lastViewportWidth = 0.0;
+  _EffectiveColumnLayout? _lastComputedLayout;
 
   DateTime? _lastTapTimestamp;
   Object? _lastTapIdentity;
+  int? _lastTapColumn;
+
+  final TextEditingController _editTextController = TextEditingController();
+  final FocusNode _editFocusNode = FocusNode(
+    debugLabel: 'DenseTableCellEditor',
+  );
+  final Object _editTapRegionGroup = Object();
+  Object? _activeEditBaselineValue;
+  String _activeEditInitialText = '';
+  bool _isCommittingOrCancelingEdit = false;
 
   DenseTableController get _controller =>
       widget.controller ?? _internalController!;
@@ -352,6 +405,7 @@ class _DenseTableState extends State<DenseTable> {
     _attachController(_controller);
     _attachHorizontalSync();
     _focusNode.addListener(_handleFocusChange);
+    _editFocusNode.addListener(_handleFocusChange);
     _rebuildSortIndexIfNeeded(force: true);
   }
 
@@ -567,6 +621,10 @@ class _DenseTableState extends State<DenseTable> {
       ..removeListener(_syncFromHeaderToBody)
       ..dispose();
     _focusNode.removeListener(_handleFocusChange);
+    _editFocusNode
+      ..removeListener(_handleFocusChange)
+      ..dispose();
+    _editTextController.dispose();
 
     _internalController?.dispose();
     _internalVerticalController?.dispose();
@@ -583,6 +641,12 @@ class _DenseTableState extends State<DenseTable> {
     controller.attachTableDelegates(
       scrollToVisualRow: _scrollToVisualRow,
       originalToVisualIndex: _originalToVisualIndex,
+      startEditing: _startEditingCell,
+      commitEditing: ([overrideText]) => _commitEditingCell(
+        overrideText: overrideText,
+        restoreTableFocus: true,
+      ),
+      cancelEditing: () => _cancelEditingCell(restoreTableFocus: true),
     );
     for (var i = 0; i < _baseColumnWidths.length; i++) {
       final override = controller.columnWidth(i);
@@ -635,7 +699,7 @@ class _DenseTableState extends State<DenseTable> {
   }
 
   void _handleFocusChange() {
-    _hasFocusNotifier.value = _focusNode.hasFocus;
+    _hasFocusNotifier.value = _focusNode.hasFocus || _editFocusNode.hasFocus;
   }
 
   void _handleControllerChanged() {
@@ -705,10 +769,18 @@ class _DenseTableState extends State<DenseTable> {
     return width.clamp(minW, maxW);
   }
 
+  bool get _hasEditableColumns => _resolvedColumns.any((col) => col.editable);
+
   bool get _canSortClientSide =>
       widget.data != null || widget._rawCellValue != null;
 
   Object? _readRawSortValue(int originalRowIndex, int colIndex) {
+    if (widget.trackDirtyCells) {
+      final staged = _controller.dirtyTextAt(originalRowIndex, colIndex);
+      if (staged != null) {
+        return num.tryParse(staged) ?? staged;
+      }
+    }
     final getter = widget._rawCellValue;
     if (getter != null) {
       return getter(originalRowIndex, colIndex);
@@ -843,6 +915,11 @@ class _DenseTableState extends State<DenseTable> {
   }
 
   void _onHeaderSortTap(int columnIndex) {
+    if (_controller.isEditing) {
+      if (!_commitEditingCell(restoreTableFocus: false)) {
+        return;
+      }
+    }
     final col = _resolvedColumns[columnIndex];
     if (!widget.enableSorting || !col.sortable) {
       return;
@@ -854,12 +931,393 @@ class _DenseTableState extends State<DenseTable> {
     );
   }
 
-  void _handleRowPointerTap(int visualIndex, {required bool fromCheckbox}) {
-    if (widget.enableKeyboardNavigation && !_focusNode.hasFocus) {
+  int? _resolveColumnAtDx(double? localDx) {
+    final layout = _lastComputedLayout;
+    if (localDx == null || layout == null) {
+      return null;
+    }
+    for (var i = 0; i < layout.columnWidths.length; i++) {
+      final start = layout.columnOffsets[i];
+      final end = start + layout.columnWidths[i];
+      if (localDx >= start && localDx < end) {
+        return i;
+      }
+    }
+    return null;
+  }
+
+  int _resolveEditTargetOriginalRow(int visualIndex, int columnIndex) {
+    final spanResolver = widget.rowSpanBuilder;
+    if (spanResolver != null && _totalRowCount > 0) {
+      final span = spanResolver(visualIndex, columnIndex);
+      if (span != null && span.rowSpan > 1) {
+        return _visualToOriginalIndex(
+          span.startRow.clamp(0, _totalRowCount - 1),
+        );
+      }
+    }
+    return _visualToOriginalIndex(visualIndex);
+  }
+
+  bool _isCellEditable(int originalRowIndex, int columnIndex) {
+    if (originalRowIndex < 0 ||
+        originalRowIndex >= _totalRowCount ||
+        columnIndex < 0 ||
+        columnIndex >= _resolvedColumns.length) {
+      return false;
+    }
+    if (!_resolvedColumns[columnIndex].editable) {
+      return false;
+    }
+    return widget.canEditCell?.call(originalRowIndex, columnIndex) ?? true;
+  }
+
+  int? _firstEditableColumnForRow(int originalRowIndex) {
+    for (var c = 0; c < _resolvedColumns.length; c++) {
+      if (_isCellEditable(originalRowIndex, c)) {
+        return c;
+      }
+    }
+    return null;
+  }
+
+  Object? _readBaselineCellValue(int originalRowIndex, int columnIndex) {
+    if (widget.trackDirtyCells) {
+      final existingDirty = _controller.dirtyChangeAt(
+        originalRowIndex,
+        columnIndex,
+      );
+      if (existingDirty != null) {
+        return existingDirty.previousValue;
+      }
+    }
+    final rawGetter = widget._rawCellValue;
+    if (rawGetter != null) {
+      return rawGetter(originalRowIndex, columnIndex);
+    }
+    final matrix = widget.data;
+    if (matrix != null && originalRowIndex < matrix.length) {
+      final row = matrix[originalRowIndex];
+      if (columnIndex < row.length) {
+        final val = row[columnIndex];
+        return val is Widget ? null : val;
+      }
+    }
+    return widget.editValueGetter?.call(originalRowIndex, columnIndex);
+  }
+
+  String _readInitialEditText(int originalRowIndex, int columnIndex) {
+    if (widget.trackDirtyCells) {
+      final staged = _controller.dirtyTextAt(originalRowIndex, columnIndex);
+      if (staged != null) {
+        return staged;
+      }
+    }
+    final editGetter = widget.editValueGetter;
+    if (editGetter != null) {
+      return editGetter(originalRowIndex, columnIndex);
+    }
+    final raw = _readBaselineCellValue(originalRowIndex, columnIndex);
+    return raw?.toString() ?? '';
+  }
+
+  bool _startEditingCell(int originalRowIndex, int columnIndex) {
+    if (!_isCellEditable(originalRowIndex, columnIndex)) {
+      return false;
+    }
+    final targetCoord = DenseCellCoord(originalRowIndex, columnIndex);
+    final currentEditing = _controller.editingCell;
+    if (currentEditing != null) {
+      if (currentEditing == targetCoord) {
+        final vis = _originalToVisualIndex(originalRowIndex);
+        if (vis != null) {
+          _ensureVisualRowVisible(vis);
+        }
+        _ensureColumnVisible(columnIndex);
+        if (!_editFocusNode.hasFocus) {
+          _editFocusNode.requestFocus();
+        }
+        return true;
+      }
+      if (!_commitEditingCell(restoreTableFocus: false)) {
+        return false;
+      }
+    }
+
+    final visualIndex = _originalToVisualIndex(originalRowIndex);
+    if (visualIndex == null) {
+      return false;
+    }
+
+    _ensureVisualRowVisible(visualIndex);
+    _ensureColumnVisible(columnIndex);
+
+    final baseline = _readBaselineCellValue(originalRowIndex, columnIndex);
+    final initialText = _readInitialEditText(originalRowIndex, columnIndex);
+    _activeEditBaselineValue = baseline;
+    _activeEditInitialText = initialText;
+    _editTextController.value = TextEditingValue(
+      text: initialText,
+      selection: TextSelection(
+        baseOffset: 0,
+        extentOffset: initialText.length,
+      ),
+    );
+
+    if (widget.selectionMode != DenseSelectionMode.none &&
+        !_controller.isRowSelected(originalRowIndex)) {
+      _controller.selectRow(originalRowIndex);
+    }
+    _controller.setFocusedCell(
+      originalRowIndex,
+      columnIndex,
+      updateAnchor: true,
+    );
+    _controller.syncEditingSession(
+      coord: targetCoord,
+      rowId: _controller.rowIdAt(originalRowIndex),
+      errorText: null,
+    );
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _controller.isEditing && !_editFocusNode.hasFocus) {
+        _editFocusNode.requestFocus();
+      }
+    });
+    return true;
+  }
+
+  bool _commitEditingCell({
+    String? overrideText,
+    required bool restoreTableFocus,
+  }) {
+    final coord = _controller.editingCell;
+    if (coord == null || _isCommittingOrCancelingEdit) {
+      return true;
+    }
+
+    final draft = overrideText ?? _editTextController.text;
+    final baseline = _activeEditBaselineValue;
+    if (coord.columnIndex >= 0 && coord.columnIndex < _resolvedColumns.length) {
+      final validator = _resolvedColumns[coord.columnIndex].validator;
+      final error = validator?.call(
+        coord.rowIndex,
+        coord.columnIndex,
+        baseline,
+        draft,
+      );
+      if (error != null) {
+        _controller.syncEditingSession(
+          coord: coord,
+          rowId: _controller.editingRowId,
+          errorText: error,
+        );
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && _controller.isEditing && !_editFocusNode.hasFocus) {
+            _editFocusNode.requestFocus();
+          }
+        });
+        return false;
+      }
+    }
+
+    _isCommittingOrCancelingEdit = true;
+    try {
+      final didModifyText = draft != _activeEditInitialText;
+      final change = DenseCellChange(
+        coord: coord,
+        rowId: _controller.rowIdAt(coord.rowIndex) ?? _controller.editingRowId,
+        previousValue: baseline,
+        newText: draft,
+      );
+
+      _controller.syncEditingSession(
+        coord: null,
+        rowId: null,
+        errorText: null,
+        notify: false,
+      );
+
+      if (didModifyText && widget.trackDirtyCells) {
+        _controller.recordCellChange(change, notify: false);
+      }
+      _controller.notifyIdentitySynced();
+
+      if (didModifyText) {
+        widget.onCellEditCommitted?.call(change);
+      }
+
+      if (restoreTableFocus && widget.enableKeyboardNavigation) {
+        _focusNode.requestFocus();
+      }
+      return true;
+    } finally {
+      _isCommittingOrCancelingEdit = false;
+    }
+  }
+
+  void _cancelEditingCell({required bool restoreTableFocus}) {
+    if (!_controller.isEditing || _isCommittingOrCancelingEdit) {
+      return;
+    }
+    _isCommittingOrCancelingEdit = true;
+    try {
+      _controller.syncEditingSession(
+        coord: null,
+        rowId: null,
+        errorText: null,
+      );
+      if (restoreTableFocus && widget.enableKeyboardNavigation) {
+        _focusNode.requestFocus();
+      }
+    } finally {
+      _isCommittingOrCancelingEdit = false;
+    }
+  }
+
+  void _handleEditorTapOutside(PointerDownEvent event) {
+    if (!widget.commitOnTapOutside || !_controller.isEditing) {
+      return;
+    }
+    _commitEditingCell(restoreTableFocus: false);
+  }
+
+  void _commitAndMoveDown() {
+    final coord = _controller.editingCell;
+    if (coord == null) {
+      return;
+    }
+    final currentVisual = _originalToVisualIndex(coord.rowIndex);
+    if (!_commitEditingCell(restoreTableFocus: true)) {
+      return;
+    }
+    if (currentVisual == null || _totalRowCount <= 0) {
+      return;
+    }
+    final nextVisual = math.min(_totalRowCount - 1, currentVisual + 1);
+    final nextOriginal = _visualToOriginalIndex(nextVisual);
+    if (widget.selectionMode != DenseSelectionMode.none) {
+      _controller.selectRow(nextOriginal);
+    }
+    _controller.setFocusedCell(
+      nextOriginal,
+      coord.columnIndex,
+      updateAnchor: true,
+    );
+    _ensureVisualRowVisible(nextVisual);
+  }
+
+  DenseCellCoord? _findAdjacentEditableCell({
+    required int fromVisualRow,
+    required int fromColumn,
+    required bool forward,
+  }) {
+    final rowCount = _totalRowCount;
+    final colCount = _resolvedColumns.length;
+    if (rowCount <= 0 || colCount <= 0) {
+      return null;
+    }
+
+    if (forward) {
+      for (var v = fromVisualRow; v < rowCount; v++) {
+        final orig = _visualToOriginalIndex(v);
+        final startCol = v == fromVisualRow ? fromColumn + 1 : 0;
+        for (var c = startCol; c < colCount; c++) {
+          if (_isCellEditable(orig, c)) {
+            return DenseCellCoord(orig, c);
+          }
+        }
+      }
+    } else {
+      for (var v = fromVisualRow; v >= 0; v--) {
+        final orig = _visualToOriginalIndex(v);
+        final startCol = v == fromVisualRow ? fromColumn - 1 : colCount - 1;
+        for (var c = startCol; c >= 0; c--) {
+          if (_isCellEditable(orig, c)) {
+            return DenseCellCoord(orig, c);
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  void _commitAndMoveAdjacentEditable({required bool forward}) {
+    final coord = _controller.editingCell;
+    if (coord == null) {
+      return;
+    }
+    final currentVisual = _originalToVisualIndex(coord.rowIndex) ?? 0;
+    final nextTarget = _findAdjacentEditableCell(
+      fromVisualRow: currentVisual,
+      fromColumn: coord.columnIndex,
+      forward: forward,
+    );
+
+    if (!_commitEditingCell(restoreTableFocus: nextTarget == null)) {
+      return;
+    }
+    if (nextTarget != null) {
+      _startEditingCell(nextTarget.rowIndex, nextTarget.columnIndex);
+    }
+  }
+
+  KeyEventResult _handleEditorKeyEvent(FocusNode node, KeyEvent event) {
+    if (!_controller.isEditing) {
+      return KeyEventResult.ignored;
+    }
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.escape) {
+      if (event is KeyDownEvent) {
+        _cancelEditingCell(restoreTableFocus: true);
+      }
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.numpadEnter) {
+      if (event is KeyDownEvent) {
+        _commitAndMoveDown();
+      }
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.tab) {
+      _commitAndMoveAdjacentEditable(
+        forward: !HardwareKeyboard.instance.isShiftPressed,
+      );
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  void _handleRowPointerTap(
+    int visualIndex, {
+    required bool fromCheckbox,
+    double? localDx,
+  }) {
+    final originalIndex = _visualToOriginalIndex(visualIndex);
+    final clickedCol = fromCheckbox ? null : _resolveColumnAtDx(localDx);
+
+    if (_controller.isEditing) {
+      final active = _controller.editingCell!;
+      final targetOrig = clickedCol != null
+          ? _resolveEditTargetOriginalRow(visualIndex, clickedCol)
+          : originalIndex;
+      if (active.rowIndex != targetOrig || active.columnIndex != clickedCol) {
+        if (!_commitEditingCell(restoreTableFocus: false)) {
+          return;
+        }
+      }
+    }
+
+    if (widget.enableKeyboardNavigation &&
+        !_controller.isEditing &&
+        !_focusNode.hasFocus) {
       _focusNode.requestFocus();
     }
 
-    final originalIndex = _visualToOriginalIndex(visualIndex);
     final tapIdentity = _rowIds != null && originalIndex < _rowIds!.length
         ? _rowIds![originalIndex]
         : originalIndex;
@@ -868,8 +1326,10 @@ class _DenseTableState extends State<DenseTable> {
         _lastTapIdentity == tapIdentity &&
         _lastTapTimestamp != null &&
         now.difference(_lastTapTimestamp!) <= _doubleTapWindow;
+    final isSameColumnDoubleTap = isDoubleTap && _lastTapColumn == clickedCol;
 
     _lastTapIdentity = tapIdentity;
+    _lastTapColumn = clickedCol;
     _lastTapTimestamp = isDoubleTap ? null : now;
 
     _applyPointerSelection(
@@ -878,8 +1338,33 @@ class _DenseTableState extends State<DenseTable> {
       fromCheckbox: fromCheckbox,
     );
 
+    if (_hasEditableColumns && clickedCol != null) {
+      _controller.setFocusedColumn(clickedCol);
+    }
+
     if (!fromCheckbox) {
       widget.onRowTap?.call(originalIndex);
+
+      if (_hasEditableColumns && clickedCol != null) {
+        final editRow = _resolveEditTargetOriginalRow(visualIndex, clickedCol);
+        final keyboard = HardwareKeyboard.instance;
+        final hasModifier = keyboard.isShiftPressed ||
+            keyboard.isMetaPressed ||
+            keyboard.isControlPressed;
+
+        if (!hasModifier && _isCellEditable(editRow, clickedCol)) {
+          if (widget.editTrigger == DenseEditTrigger.singleTap) {
+            _startEditingCell(editRow, clickedCol);
+            return;
+          }
+          if (widget.editTrigger == DenseEditTrigger.doubleTap &&
+              isSameColumnDoubleTap) {
+            _startEditingCell(editRow, clickedCol);
+            return;
+          }
+        }
+      }
+
       if (isDoubleTap) {
         widget.onRowDoubleTap?.call(originalIndex);
         widget.onRowActivated?.call(originalIndex);
@@ -965,6 +1450,9 @@ class _DenseTableState extends State<DenseTable> {
   }
 
   KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
+    if (_controller.isEditing) {
+      return KeyEventResult.ignored;
+    }
     if (!widget.enableKeyboardNavigation) {
       return KeyEventResult.ignored;
     }
@@ -1005,9 +1493,71 @@ class _DenseTableState extends State<DenseTable> {
         ? (_originalToVisualIndex(currentOriginal) ?? 0)
         : -1;
 
+    if (_hasEditableColumns && _resolvedColumns.isNotEmpty) {
+      if (key == LogicalKeyboardKey.f2 && event is KeyDownEvent) {
+        final targetOrig = currentOriginal ?? _visualToOriginalIndex(0);
+        final targetCol =
+            _controller.focusedColumn ?? _firstEditableColumnForRow(targetOrig);
+        if (targetCol != null && _isCellEditable(targetOrig, targetCol)) {
+          _startEditingCell(targetOrig, targetCol);
+          return KeyEventResult.handled;
+        }
+      }
+
+      if ((key == LogicalKeyboardKey.arrowLeft ||
+              key == LogicalKeyboardKey.arrowRight) &&
+          !isAccel) {
+        final colCount = _resolvedColumns.length;
+        final baseOrig = currentOriginal ?? _visualToOriginalIndex(0);
+        final baseCol = _controller.focusedColumn ??
+            (_firstEditableColumnForRow(baseOrig) ?? 0);
+        final nextCol = key == LogicalKeyboardKey.arrowRight
+            ? math.min(colCount - 1, baseCol + 1)
+            : math.max(0, baseCol - 1);
+        _controller.setFocusedCell(baseOrig, nextCol, updateAnchor: true);
+        _ensureColumnVisible(nextCol);
+        return KeyEventResult.handled;
+      }
+
+      if (key == LogicalKeyboardKey.tab && !isAccel) {
+        final baseVis = currentVisual < 0 ? 0 : currentVisual;
+        final baseOrig = _visualToOriginalIndex(baseVis);
+        final baseCol = _controller.focusedColumn ??
+            (_firstEditableColumnForRow(baseOrig) ?? (isShift ? 1 : -1));
+        final nextCoord = _findAdjacentEditableCell(
+          fromVisualRow: baseVis,
+          fromColumn: baseCol,
+          forward: !isShift,
+        );
+        if (nextCoord != null) {
+          final nextVis = _originalToVisualIndex(nextCoord.rowIndex) ?? baseVis;
+          if (widget.selectionMode != DenseSelectionMode.none) {
+            _controller.selectRow(nextCoord.rowIndex);
+          }
+          _controller.setFocusedCell(
+            nextCoord.rowIndex,
+            nextCoord.columnIndex,
+            updateAnchor: true,
+          );
+          _ensureVisualRowVisible(nextVis);
+          _ensureColumnVisible(nextCoord.columnIndex);
+          return KeyEventResult.handled;
+        }
+      }
+    }
+
     if (key == LogicalKeyboardKey.enter ||
         key == LogicalKeyboardKey.numpadEnter) {
       if (currentOriginal != null) {
+        if (_hasEditableColumns && event is KeyDownEvent) {
+          final targetCol = _controller.focusedColumn ??
+              _firstEditableColumnForRow(currentOriginal);
+          if (targetCol != null &&
+              _isCellEditable(currentOriginal, targetCol)) {
+            _startEditingCell(currentOriginal, targetCol);
+            return KeyEventResult.handled;
+          }
+        }
         widget.onRowActivated?.call(currentOriginal);
         return KeyEventResult.handled;
       }
@@ -1125,6 +1675,30 @@ class _DenseTableState extends State<DenseTable> {
     }
   }
 
+  void _ensureColumnVisible(int columnIndex) {
+    final layout = _lastComputedLayout;
+    if (!_bodyHorizontalController.hasClients ||
+        layout == null ||
+        columnIndex < 0 ||
+        columnIndex >= layout.columnWidths.length ||
+        _lastViewportWidth <= 0) {
+      return;
+    }
+    final pos = _bodyHorizontalController.position;
+    final colLeft = layout.columnOffsets[columnIndex];
+    final colRight = colLeft + layout.columnWidths[columnIndex];
+    final viewLeft = pos.pixels;
+    final viewRight = viewLeft + _lastViewportWidth;
+
+    if (colLeft < viewLeft) {
+      _bodyHorizontalController.jumpTo(colLeft.clamp(0.0, pos.maxScrollExtent));
+    } else if (colRight > viewRight) {
+      _bodyHorizontalController.jumpTo(
+        (colRight - _lastViewportWidth).clamp(0.0, pos.maxScrollExtent),
+      );
+    }
+  }
+
   _EffectiveColumnLayout _computeColumnLayout(double availableViewportWidth) {
     final checkboxW = _showCheckboxes ? widget.style.checkboxColumnWidth : 0.0;
     final actionsW = _hasActionsColumn ? widget.actionsWidth : 0.0;
@@ -1225,6 +1799,8 @@ class _DenseTableState extends State<DenseTable> {
         final viewportWidth = math.max(0.0, outerWidth - borderThickness);
 
         final layout = _computeColumnLayout(viewportWidth);
+        _lastViewportWidth = viewportWidth;
+        _lastComputedLayout = layout;
 
         final contentBodyHeight = rowCount == 0
             ? math.max(style.rowHeight * 3.0, 72.0)
@@ -1645,6 +2221,17 @@ class _DenseTableState extends State<DenseTable> {
   static bool _isSpanOverlaid(DenseRowSpan? span) =>
       span != null && (span.rowSpan > 1 || span.backgroundColor != null);
 
+  static TextAlign _textAlignForAlignment(AlignmentGeometry alignment) {
+    final resolved = alignment.resolve(TextDirection.ltr);
+    if (resolved.x > 0.25) {
+      return TextAlign.right;
+    }
+    if (resolved.x.abs() <= 0.25) {
+      return TextAlign.center;
+    }
+    return TextAlign.left;
+  }
+
   Widget _buildBodyScrollSurface({
     required int rowCount,
     required double bodyHeight,
@@ -1668,7 +2255,9 @@ class _DenseTableState extends State<DenseTable> {
       ),
     );
 
-    if (widget.rowSpanBuilder == null) {
+    final hasSpans = widget.rowSpanBuilder != null;
+    final hasEditors = _hasEditableColumns;
+    if (!hasSpans && !hasEditors) {
       return listView;
     }
 
@@ -1682,19 +2271,156 @@ class _DenseTableState extends State<DenseTable> {
         fit: StackFit.expand,
         children: <Widget>[
           listView,
-          IgnorePointer(
-            child: AnimatedBuilder(
+          if (hasSpans)
+            IgnorePointer(
+              child: AnimatedBuilder(
+                animation: overlayListenable,
+                builder: (context, _) => _buildMergedCellsOverlay(
+                  context: context,
+                  rowCount: rowCount,
+                  bodyHeight: bodyHeight,
+                  layout: layout,
+                ),
+              ),
+            ),
+          if (hasEditors)
+            AnimatedBuilder(
               animation: overlayListenable,
-              builder: (context, _) => _buildMergedCellsOverlay(
+              builder: (context, _) => _buildActiveEditorOverlay(
                 context: context,
                 rowCount: rowCount,
-                bodyHeight: bodyHeight,
                 layout: layout,
               ),
             ),
-          ),
         ],
       ),
+    );
+  }
+
+  Widget _buildActiveEditorOverlay({
+    required BuildContext context,
+    required int rowCount,
+    required _EffectiveColumnLayout layout,
+  }) {
+    final coord = _controller.editingCell;
+    if (coord == null ||
+        rowCount <= 0 ||
+        coord.columnIndex < 0 ||
+        coord.columnIndex >= _resolvedColumns.length) {
+      return const SizedBox.shrink();
+    }
+
+    final visualRow = _originalToVisualIndex(coord.rowIndex);
+    if (visualRow == null) {
+      return const SizedBox.shrink();
+    }
+
+    final style = widget.style;
+    final rowH = style.rowHeight;
+    final scrollOffset = _verticalController.hasClients
+        ? math.max(0.0, _verticalController.offset)
+        : 0.0;
+
+    var startRow = visualRow;
+    var effectiveRows = 1;
+    final spanResolver = widget.rowSpanBuilder;
+    if (spanResolver != null) {
+      final span = spanResolver(visualRow, coord.columnIndex);
+      if (span != null && span.rowSpan > 1) {
+        startRow = span.startRow.clamp(0, rowCount - 1);
+        final endExcl = span.endRowExclusive.clamp(startRow + 1, rowCount);
+        effectiveRows = endExcl - startRow;
+      }
+    }
+
+    final boxTop = startRow * rowH - scrollOffset;
+    final boxHeight = effectiveRows * rowH;
+    final colLeft = layout.columnOffsets[coord.columnIndex];
+    final colW = layout.columnWidths[coord.columnIndex];
+    final col = _resolvedColumns[coord.columnIndex];
+    final errorText = _controller.editingError;
+    final borderColor = errorText != null
+        ? style.editingErrorBorderColor
+        : (style.editingCellBorderColor ?? style.activeSortIconColor);
+    final bgColor = style.editingCellBackgroundColor ?? style.backgroundColor;
+
+    final Widget editorBody;
+    if (col.editorBuilder != null) {
+      editorBody = col.editorBuilder!(
+        context,
+        DenseCellEditContext(
+          coord: coord,
+          rowId:
+              _controller.editingRowId ?? _controller.rowIdAt(coord.rowIndex),
+          rawValue: _activeEditBaselineValue,
+          initialText: _activeEditInitialText,
+          textController: _editTextController,
+          focusNode: _editFocusNode,
+          textStyle: style.cellTextStyle,
+          errorText: errorText,
+          tapRegionGroupId: _editTapRegionGroup,
+          commit: ([overrideText]) => _commitEditingCell(
+            overrideText: overrideText,
+            restoreTableFocus: true,
+          ),
+          cancel: () => _cancelEditingCell(restoreTableFocus: true),
+        ),
+      );
+    } else {
+      editorBody = Padding(
+        padding: style.cellPadding,
+        child: Align(
+          alignment: col.alignment,
+          child: EditableText(
+            key: const ValueKey<String>('_dense_inline_editor'),
+            controller: _editTextController,
+            focusNode: _editFocusNode,
+            autofocus: true,
+            style: style.cellTextStyle,
+            cursorColor: style.editingCursorColor ?? style.activeSortIconColor,
+            backgroundCursorColor: style.gridColor,
+            selectionColor: style.editingSelectionColor,
+            textAlign: _textAlignForAlignment(col.alignment),
+            maxLines: 1,
+            onChanged: (_) {
+              if (_controller.editingError != null) {
+                _controller.clearEditingError();
+              }
+            },
+            onSubmitted: (_) => _commitAndMoveDown(),
+          ),
+        ),
+      );
+    }
+
+    return Stack(
+      clipBehavior: Clip.none,
+      children: <Widget>[
+        Positioned(
+          key: const ValueKey<String>('_dense_editor_pos'),
+          left: colLeft,
+          top: boxTop,
+          width: colW,
+          height: boxHeight,
+          child: TapRegion(
+            groupId: _editTapRegionGroup,
+            onTapOutside:
+                widget.commitOnTapOutside ? _handleEditorTapOutside : null,
+            child: Focus(
+              canRequestFocus: false,
+              skipTraversal: true,
+              onKeyEvent: _handleEditorKeyEvent,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: bgColor,
+                  border: Border.all(color: borderColor, width: 1.5),
+                ),
+                child: editorBody,
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -1744,6 +2470,9 @@ class _DenseTableState extends State<DenseTable> {
         final boxTop = startRow * rowH - scrollOffset;
         final boxHeight = effectiveRows * rowH;
         final startOriginal = _visualToOriginalIndex(startRow);
+        final isMergedDirty = widget.trackDirtyCells &&
+            style.dirtyCellIndicatorSize > 0 &&
+            _controller.isCellDirty(startOriginal, colIdx);
 
         var innerTop = 0.0;
         var innerHeight = boxHeight;
@@ -1783,6 +2512,9 @@ class _DenseTableState extends State<DenseTable> {
                 gridColor: style.gridColor,
                 drawRightBorder: hasRightDivider,
                 drawBottomBorder: style.showHorizontalGridLines,
+                isDirty: isMergedDirty,
+                dirtyIndicatorColor: style.dirtyCellIndicatorColor,
+                dirtyIndicatorSize: style.dirtyCellIndicatorSize,
               ),
               child: innerTop == 0.0 && innerHeight == boxHeight
                   ? cellChild
@@ -1823,7 +2555,9 @@ class _DenseTableState extends State<DenseTable> {
   }) {
     final originalIndex = _visualToOriginalIndex(visualIndex);
     final style = widget.style;
-    final isInteractive = widget.selectionMode != DenseSelectionMode.none ||
+    final hasEditors = _hasEditableColumns;
+    final isInteractive = hasEditors ||
+        widget.selectionMode != DenseSelectionMode.none ||
         widget.onRowTap != null ||
         widget.onRowDoubleTap != null ||
         widget.onRowActivated != null;
@@ -1833,7 +2567,11 @@ class _DenseTableState extends State<DenseTable> {
       onEnter: (_) => _hoveredVisualRow.value = visualIndex,
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onTap: () => _handleRowPointerTap(visualIndex, fromCheckbox: false),
+        onTapUp: (details) => _handleRowPointerTap(
+          visualIndex,
+          fromCheckbox: false,
+          localDx: details.localPosition.dx,
+        ),
         onSecondaryTapDown: widget.onRowSecondaryTapDown != null
             ? (details) => widget.onRowSecondaryTapDown!(originalIndex, details)
             : null,
@@ -1862,10 +2600,10 @@ class _DenseTableState extends State<DenseTable> {
                 ? (style.selectedCellTextStyle ?? style.cellTextStyle)
                 : style.cellTextStyle;
 
+            final colCount = _resolvedColumns.length;
             final spanResolver = widget.rowSpanBuilder;
             List<bool>? overlaidCols;
             if (spanResolver != null) {
-              final colCount = _resolvedColumns.length;
               for (var c = 0; c < colCount; c++) {
                 if (_isSpanOverlaid(spanResolver(visualIndex, c))) {
                   overlaidCols ??= List<bool>.filled(colCount, false);
@@ -1874,6 +2612,23 @@ class _DenseTableState extends State<DenseTable> {
               }
             }
 
+            List<bool>? dirtyCols;
+            if (widget.trackDirtyCells &&
+                style.dirtyCellIndicatorSize > 0 &&
+                _controller.hasDirtyCells) {
+              for (var c = 0; c < colCount; c++) {
+                if (_controller.isCellDirty(originalIndex, c)) {
+                  dirtyCols ??= List<bool>.filled(colCount, false);
+                  dirtyCols[c] = true;
+                }
+              }
+            }
+
+            final focusedCol =
+                (isFocused && hasEditors && !_controller.isEditing)
+                    ? _controller.focusedColumn
+                    : null;
+
             return CustomPaint(
               painter: _DenseRowGridPainter(
                 baseBackgroundColor: style.backgroundColor,
@@ -1881,6 +2636,12 @@ class _DenseTableState extends State<DenseTable> {
                 gridColor: style.gridColor,
                 focusBorderColor:
                     isFocused ? style.focusedRowBorderColor : null,
+                focusedColumnIndex: focusedCol,
+                focusedCellBorderColor:
+                    style.focusedCellBorderColor ?? style.focusedRowBorderColor,
+                dirtyColumns: dirtyCols,
+                dirtyIndicatorColor: style.dirtyCellIndicatorColor,
+                dirtyIndicatorSize: style.dirtyCellIndicatorSize,
                 checkboxWidth: layout.checkboxWidth,
                 columnOffsets: layout.columnOffsets,
                 columnWidths: layout.columnWidths,
@@ -1965,6 +2726,22 @@ class _DenseTableState extends State<DenseTable> {
     required int columnIndex,
     required TextStyle textStyle,
   }) {
+    if (_controller.editingCell ==
+        DenseCellCoord(originalRowIndex, columnIndex)) {
+      return const SizedBox.shrink();
+    }
+    if (widget.trackDirtyCells && widget.displayDirtyText) {
+      final staged = _controller.dirtyTextAt(originalRowIndex, columnIndex);
+      if (staged != null) {
+        return Text(
+          staged,
+          style: textStyle,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        );
+      }
+    }
+
     final builder = widget._cellBuilder;
     if (builder != null) {
       return DefaultTextStyle.merge(
@@ -2062,6 +2839,11 @@ class _DenseRowGridPainter extends CustomPainter {
     required this.backgroundColor,
     required this.gridColor,
     required this.focusBorderColor,
+    required this.focusedColumnIndex,
+    required this.focusedCellBorderColor,
+    required this.dirtyColumns,
+    required this.dirtyIndicatorColor,
+    required this.dirtyIndicatorSize,
     required this.checkboxWidth,
     required this.columnOffsets,
     required this.columnWidths,
@@ -2075,6 +2857,11 @@ class _DenseRowGridPainter extends CustomPainter {
   final Color backgroundColor;
   final Color gridColor;
   final Color? focusBorderColor;
+  final int? focusedColumnIndex;
+  final Color focusedCellBorderColor;
+  final List<bool>? dirtyColumns;
+  final Color dirtyIndicatorColor;
+  final double dirtyIndicatorSize;
   final double checkboxWidth;
   final List<double> columnOffsets;
   final List<double> columnWidths;
@@ -2164,6 +2951,27 @@ class _DenseRowGridPainter extends CustomPainter {
       }
     }
 
+    final dirty = dirtyColumns;
+    if (dirty != null && dirtyIndicatorSize > 0) {
+      final dirtyPaint = Paint()
+        ..color = dirtyIndicatorColor
+        ..style = PaintingStyle.fill
+        ..isAntiAlias = true;
+      final tri = dirtyIndicatorSize;
+      for (var c = 0; c < dirty.length && c < columnOffsets.length; c++) {
+        if (!dirty[c] || (overlaid != null && overlaid[c])) {
+          continue;
+        }
+        final left = columnOffsets[c];
+        final path = Path()
+          ..moveTo(left, 0.0)
+          ..lineTo(left + tri, 0.0)
+          ..lineTo(left, tri)
+          ..close();
+        canvas.drawPath(path, dirtyPaint);
+      }
+    }
+
     final focusColor = focusBorderColor;
     if (focusColor != null && size.width > 2 && size.height > 2) {
       final focusPaint = Paint()
@@ -2175,6 +2983,30 @@ class _DenseRowGridPainter extends CustomPainter {
         focusPaint,
       );
     }
+
+    final focusCol = focusedColumnIndex;
+    if (focusCol != null &&
+        focusCol >= 0 &&
+        focusCol < columnWidths.length &&
+        (overlaid == null || !overlaid[focusCol]) &&
+        size.height > 2) {
+      final cellW = columnWidths[focusCol];
+      if (cellW > 2) {
+        final cellPaint = Paint()
+          ..color = focusedCellBorderColor
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.5;
+        canvas.drawRect(
+          Rect.fromLTWH(
+            columnOffsets[focusCol] + 0.75,
+            0.75,
+            cellW - 1.5,
+            size.height - 1.5,
+          ),
+          cellPaint,
+        );
+      }
+    }
   }
 
   @override
@@ -2183,9 +3015,14 @@ class _DenseRowGridPainter extends CustomPainter {
       oldDelegate.backgroundColor != backgroundColor ||
       oldDelegate.gridColor != gridColor ||
       oldDelegate.focusBorderColor != focusBorderColor ||
+      oldDelegate.focusedColumnIndex != focusedColumnIndex ||
+      oldDelegate.focusedCellBorderColor != focusedCellBorderColor ||
+      oldDelegate.dirtyIndicatorColor != dirtyIndicatorColor ||
+      oldDelegate.dirtyIndicatorSize != dirtyIndicatorSize ||
       oldDelegate.checkboxWidth != checkboxWidth ||
       oldDelegate.showVerticalLines != showVerticalLines ||
       oldDelegate.showHorizontalLines != showHorizontalLines ||
+      !_boolListEquals(oldDelegate.dirtyColumns, dirtyColumns) ||
       !_boolListEquals(oldDelegate.overlaidColumns, overlaidColumns) ||
       !_doubleListEquals(oldDelegate.columnOffsets, columnOffsets) ||
       !_doubleListEquals(oldDelegate.columnWidths, columnWidths) ||
@@ -2198,17 +3035,37 @@ class _DenseMergedCellPainter extends CustomPainter {
     required this.gridColor,
     required this.drawRightBorder,
     required this.drawBottomBorder,
+    required this.isDirty,
+    required this.dirtyIndicatorColor,
+    required this.dirtyIndicatorSize,
   });
 
   final Color backgroundColor;
   final Color gridColor;
   final bool drawRightBorder;
   final bool drawBottomBorder;
+  final bool isDirty;
+  final Color dirtyIndicatorColor;
+  final double dirtyIndicatorSize;
 
   @override
   void paint(Canvas canvas, Size size) {
     final fillPaint = Paint()..color = backgroundColor;
     canvas.drawRect(Offset.zero & size, fillPaint);
+
+    if (isDirty && dirtyIndicatorSize > 0) {
+      final dirtyPaint = Paint()
+        ..color = dirtyIndicatorColor
+        ..style = PaintingStyle.fill
+        ..isAntiAlias = true;
+      final tri = dirtyIndicatorSize;
+      final path = Path()
+        ..moveTo(0.0, 0.0)
+        ..lineTo(tri, 0.0)
+        ..lineTo(0.0, tri)
+        ..close();
+      canvas.drawPath(path, dirtyPaint);
+    }
 
     if (drawRightBorder || drawBottomBorder) {
       final borderPaint = Paint()
@@ -2230,7 +3087,10 @@ class _DenseMergedCellPainter extends CustomPainter {
       oldDelegate.backgroundColor != backgroundColor ||
       oldDelegate.gridColor != gridColor ||
       oldDelegate.drawRightBorder != drawRightBorder ||
-      oldDelegate.drawBottomBorder != drawBottomBorder;
+      oldDelegate.drawBottomBorder != drawBottomBorder ||
+      oldDelegate.isDirty != isDirty ||
+      oldDelegate.dirtyIndicatorColor != dirtyIndicatorColor ||
+      oldDelegate.dirtyIndicatorSize != dirtyIndicatorSize;
 }
 
 class _DenseUnsortedIconPainter extends CustomPainter {

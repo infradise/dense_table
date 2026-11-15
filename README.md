@@ -22,6 +22,7 @@ Flutter's built-in `DataTable` instantiates every cell eagerly in a single `Rend
 
 - **True `O(1)` Fixed-Extent Virtualization (`100,000+` Rows)**: Built on fixed-extent viewport math (`rowHeight`) and lazy `DenseTable.builder` cell construction so only the ~25–50 visible rows are mounted, and scrollbar thumb drags to row `99,999` resolve in `O(1)` arithmetic.
 - **Stable Row Identity (`rowIdBuilder`)**: Anchors multi-row selection, keyboard focus, and `Shift`-range extension to stable domain record IDs (e.g., Pod UIDs, container IDs, primary keys) across built-in sorting, external search filtering, and live streaming insertions/deletions.
+- **Spreadsheet-Style Inline Cell Editing (`editable: true`)**: Zero-dependency inline cell editing built directly on `EditableText`—with `Double-Click` / `F2` / `Enter` activation, `Tab` & `Shift+Tab` traversal across editable columns (including automatic 2D scroll reveal), `validator` error borders, custom `editorBuilder` slots, off-screen scroll draft preservation across 100,000+ rows, and a built-in `dirtyCells` staging buffer reconciled by `rowIdBuilder`.
 - **Virtualized Vertical Cell Merging (`rowSpanBuilder`)**: Merges consecutive rows in grouping columns (`Namespace`, `Controller`, `QoS`, `Category`) in `O(1)` viewport time—keeping merged cells visible even when `startRow` scrolls off-screen while preserving row click, hover, and scroll physics.
 - **Single-Pass `CustomPaint` Crisp Grid**: Paints row backgrounds (zebra striping, hover, selection, focus ring) and `1px` vertical/horizontal grid lines in a single lightweight `CustomPainter` per visible row instead of allocating nested `BoxDecoration` trees per cell.
 - **Interactive Resizable Columns**: Drag any column header divider to resize within `minColumnWidth` / `maxColumnWidth`, or double-click a divider to reset the column to its initial width.
@@ -33,10 +34,11 @@ Flutter's built-in `DataTable` instantiates every cell eagerly in a single `Rend
 
 ## Comparison
 
-| Capability | Flutter `DataTable` | `dense_table` `1.2.0` |
+| Capability | Flutter `DataTable` | `dense_table` `1.3.0` |
 | :--- | :--- | :--- |
 | **External Dependencies** | Flutter SDK | **Zero (Flutter SDK only)** |
 | **100,000+ Row Virtualization** | Eager `O(N)` (freezes / OOM) | **`O(1)` fixed-extent + `.builder`** |
+| **Inline Cell Editing & Dirty Staging** | Manual `TextField` per cell | **Zero-dep `EditableText`, `Tab` nav & `dirtyCells`** |
 | **Virtualized Vertical `RowSpan`** | Not supported | **`O(1)` viewport `rowSpanBuilder`** |
 | **Stable Row ID Anchoring** | Manual index bookkeeping | **`rowIdBuilder` across sort, filter & streams** |
 | **Sticky Header + 2D Scroll Sync** | Scrolls off-screen by default | **Built-in synced 2D scrollbars** |
@@ -52,7 +54,7 @@ Flutter's built-in `DataTable` instantiates every cell eagerly in a single `Rend
 
 ```yaml
 dependencies:
-  dense_table: ^1.2.0
+  dense_table: ^1.3.0
 ```
 
 ---
@@ -188,7 +190,8 @@ class _LargeClusterGridState extends State<LargeClusterGrid> {
 | **`ArrowUp` / `ArrowDown`** | Moves row focus (hold `Shift` to extend multi-row range) |
 | **`PageUp` / `PageDown`** | Jumps one viewport page up or down |
 | **`Home` / `End`** | Jumps immediately to first (`0`) or last (`N - 1`) visual row |
-| **`Space` / `Enter` / `Esc`** | Toggles focused row / activates row / clears selection |
+| **`Space` / `Enter` / `Esc`** | Toggles focused row / activates row (or edits focused editable cell) / clears selection |
+| **`F2` / Double-Click Editable Cell** | Opens inline cell editor (`Tab` / `Shift+Tab` moves across editable cells; `Enter` commits & moves down; `Esc` cancels) |
 
 ---
 

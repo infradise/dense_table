@@ -6,7 +6,7 @@ void main() {
     await tester.pumpWidget(const DenseTableDemoApp());
     await tester.pumpAndSettle();
 
-    expect(find.text('DenseTable 1.2.0 Showcase'), findsOneWidget);
+    expect(find.text('DenseTable 1.3.0 Showcase'), findsOneWidget);
     expect(find.textContaining('Dataset: 100000 rows'), findsOneWidget);
     expect(find.text('pod-worker-000000'), findsOneWidget);
 

@@ -32,6 +32,198 @@ enum DenseSortCycle {
   toggle,
 }
 
+/// Pointer/keyboard gesture policy that activates inline cell editing on an
+/// editable `DenseColumn`.
+enum DenseEditTrigger {
+  /// Enters edit mode when double-clicking an editable cell, or when pressing
+  /// `F2` / `Enter` while focused on an editable cell.
+  doubleTap,
+
+  /// Enters edit mode only via keyboard (`F2` or `Enter`) or programmatic
+  /// controller calls, preserving pointer double-clicks for row activation.
+  f2OrEnter,
+
+  /// Enters edit mode immediately on a primary single click of an editable
+  /// cell (as well as `F2` or `Enter`).
+  singleTap,
+}
+
+/// Immutable `(rowIndex, columnIndex)` coordinate identifying a data cell by
+/// its original data row index and zero-based column index.
+@immutable
+class DenseCellCoord {
+  /// Creates a [DenseCellCoord] for [rowIndex] and [columnIndex].
+  const DenseCellCoord(this.rowIndex, this.columnIndex);
+
+  /// Zero-based original data row index (`0 .. rowCount - 1`).
+  final int rowIndex;
+
+  /// Zero-based data column index (`0 .. columnCount - 1`).
+  final int columnIndex;
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) {
+      return true;
+    }
+    return other is DenseCellCoord &&
+        other.rowIndex == rowIndex &&
+        other.columnIndex == columnIndex;
+  }
+
+  @override
+  int get hashCode => Object.hash(rowIndex, columnIndex);
+
+  @override
+  String toString() => 'DenseCellCoord($rowIndex, $columnIndex)';
+}
+
+/// Immutable record describing a committed inline cell edit.
+@immutable
+class DenseCellChange {
+  /// Creates a [DenseCellChange] for [coord] from [previousValue] to [newText].
+  const DenseCellChange({
+    required this.coord,
+    required this.previousValue,
+    required this.newText,
+    this.rowId,
+  });
+
+  /// Cell coordinate (`rowIndex`, `columnIndex`) in the current dataset.
+  final DenseCellCoord coord;
+
+  /// Optional stable record identifier resolved from `rowIdBuilder` when bound.
+  final Object? rowId;
+
+  /// Original baseline value prior to uncommitted inline edits.
+  final Object? previousValue;
+
+  /// Committed text produced by the inline cell editor.
+  final String newText;
+
+  /// Returns a copy of this [DenseCellChange] with specified fields replaced.
+  DenseCellChange copyWith({
+    DenseCellCoord? coord,
+    Object? rowId,
+    Object? previousValue,
+    String? newText,
+  }) {
+    return DenseCellChange(
+      coord: coord ?? this.coord,
+      rowId: rowId ?? this.rowId,
+      previousValue: previousValue ?? this.previousValue,
+      newText: newText ?? this.newText,
+    );
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) {
+      return true;
+    }
+    return other is DenseCellChange &&
+        other.coord == coord &&
+        other.rowId == rowId &&
+        other.previousValue == previousValue &&
+        other.newText == newText;
+  }
+
+  @override
+  int get hashCode => Object.hash(coord, rowId, previousValue, newText);
+
+  @override
+  String toString() =>
+      'DenseCellChange(coord: $coord, rowId: $rowId, previousValue: $previousValue, newText: $newText)';
+}
+
+/// Context passed to a custom [DenseCellEditorBuilder] for rendering bespoke
+/// inline cell editors (such as enum pickers, toggles, or formatted inputs).
+@immutable
+class DenseCellEditContext {
+  /// Creates a [DenseCellEditContext] for the active cell editing session.
+  const DenseCellEditContext({
+    required this.coord,
+    required this.rowId,
+    required this.rawValue,
+    required this.initialText,
+    required this.textController,
+    required this.focusNode,
+    required this.textStyle,
+    required this.errorText,
+    required this.tapRegionGroupId,
+    required this.commit,
+    required this.cancel,
+  });
+
+  /// Coordinate of the cell currently being edited.
+  final DenseCellCoord coord;
+
+  /// Optional stable record ID resolved via `rowIdBuilder` for [coord].
+  final Object? rowId;
+
+  /// Underlying baseline cell value before inline editing started.
+  final Object? rawValue;
+
+  /// Initial string loaded into [textController] when editing began.
+  final String initialText;
+
+  /// Managed [TextEditingController] holding the current draft string.
+  final TextEditingController textController;
+
+  /// Managed [FocusNode] assigned to the active cell editor.
+  final FocusNode focusNode;
+
+  /// Effective cell [TextStyle] matching the surrounding `DenseTable`.
+  final TextStyle textStyle;
+
+  /// Validation error message from [DenseColumn.validator], or `null` if valid.
+  final String? errorText;
+
+  /// Group identifier for `TapRegion` so custom overlay popups can share the
+  /// active editor's outside-tap boundary.
+  final Object tapRegionGroupId;
+
+  /// Validates and commits [textController] (or `overrideText` if supplied),
+  /// returning `true` when validation succeeds.
+  final bool Function([String? overrideText]) commit;
+
+  /// Discards draft changes and closes the active inline editor.
+  final VoidCallback cancel;
+}
+
+/// Signature for validating draft inline cell text before committing.
+///
+/// Return `null` when [draftText] is valid, or a non-null human-readable error
+/// string to block commit and highlight the active cell with an error border.
+typedef DenseCellValidator = String? Function(
+  int rowIndex,
+  int columnIndex,
+  Object? previousValue,
+  String draftText,
+);
+
+/// Signature for dynamically enabling or disabling inline editing per cell
+/// (for example, locking primary-key cells or read-only system rows).
+typedef DenseCellEditablePredicate = bool Function(
+  int rowIndex,
+  int columnIndex,
+);
+
+/// Signature for extracting the initial editable string for `(rowIndex, columnIndex)`.
+typedef DenseCellEditValueGetter = String Function(
+  int rowIndex,
+  int columnIndex,
+);
+
+/// Signature for building a custom inline editor widget inside an editable cell.
+typedef DenseCellEditorBuilder = Widget Function(
+  BuildContext context,
+  DenseCellEditContext editContext,
+);
+
+/// Signature invoked whenever a modified cell edit passes validation and commits.
+typedef DenseCellEditCommittedCallback = void Function(DenseCellChange change);
+
 /// Immutable representation of the active sort column and direction.
 @immutable
 class DenseSortState {
@@ -186,9 +378,12 @@ class DenseColumn {
     this.flex,
     this.resizable = true,
     this.sortable = true,
+    this.editable = false,
     this.initialSortDirection = DenseSortDirection.ascending,
     this.alignment = Alignment.centerLeft,
     this.comparator,
+    this.validator,
+    this.editorBuilder,
     this.headerKey,
     this.headerChild,
     this.headerBuilder,
@@ -217,6 +412,9 @@ class DenseColumn {
   /// Whether clicking this column header sorts the table (when sorting is enabled).
   final bool sortable;
 
+  /// Whether cells in this column support spreadsheet-style inline editing.
+  final bool editable;
+
   /// Initial [DenseSortDirection] applied when this column is first clicked.
   final DenseSortDirection initialSortDirection;
 
@@ -225,6 +423,13 @@ class DenseColumn {
 
   /// Optional custom comparator used when sorting by this column.
   final DenseCellComparator? comparator;
+
+  /// Optional validator run before committing inline edits in this column.
+  final DenseCellValidator? validator;
+
+  /// Optional custom inline editor builder overriding the default zero-dependency
+  /// `EditableText` cell editor for this column.
+  final DenseCellEditorBuilder? editorBuilder;
 
   /// Optional key attached to the interactive header cell container.
   final Key? headerKey;

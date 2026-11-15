@@ -50,12 +50,24 @@ class DenseStyle {
     this.activeHeaderTextStyle,
     this.showUnsortedSortIcon = false,
     this.sortIconInline = false,
+    this.focusedCellBorderColor,
+    this.editingCellBackgroundColor,
+    this.editingCellBorderColor,
+    this.editingErrorBorderColor = const Color(0xFFE5534B),
+    this.editingCursorColor,
+    this.editingSelectionColor = const Color(0x663574F0),
+    this.dirtyCellIndicatorColor = const Color(0xFFE5A50A),
+    this.dirtyCellIndicatorSize = 5.0,
   })  : assert(rowHeight > 0, 'rowHeight must be strictly positive.'),
         assert(headerHeight > 0, 'headerHeight must be strictly positive.'),
         assert(minColumnWidth >= 16.0, 'minColumnWidth must be >= 16.0.'),
         assert(
           maxColumnWidth >= minColumnWidth,
           'maxColumnWidth must be >= minColumnWidth.',
+        ),
+        assert(
+          dirtyCellIndicatorSize >= 0.0,
+          'dirtyCellIndicatorSize must be non-negative.',
         );
 
   /// Creates the default dark IDE [DenseStyle] with optional overrides.
@@ -101,12 +113,24 @@ class DenseStyle {
     this.activeHeaderTextStyle,
     this.showUnsortedSortIcon = false,
     this.sortIconInline = false,
+    this.focusedCellBorderColor,
+    this.editingCellBackgroundColor,
+    this.editingCellBorderColor,
+    this.editingErrorBorderColor = const Color(0xFFE5534B),
+    this.editingCursorColor,
+    this.editingSelectionColor = const Color(0x663574F0),
+    this.dirtyCellIndicatorColor = const Color(0xFFE5A50A),
+    this.dirtyCellIndicatorSize = 5.0,
   })  : assert(rowHeight > 0, 'rowHeight must be strictly positive.'),
         assert(headerHeight > 0, 'headerHeight must be strictly positive.'),
         assert(minColumnWidth >= 16.0, 'minColumnWidth must be >= 16.0.'),
         assert(
           maxColumnWidth >= minColumnWidth,
           'maxColumnWidth must be >= minColumnWidth.',
+        ),
+        assert(
+          dirtyCellIndicatorSize >= 0.0,
+          'dirtyCellIndicatorSize must be non-negative.',
         );
 
   /// Creates a crisp light-theme [DenseStyle] for bright desktop and web UIs.
@@ -152,12 +176,24 @@ class DenseStyle {
     this.activeHeaderTextStyle,
     this.showUnsortedSortIcon = false,
     this.sortIconInline = false,
+    this.focusedCellBorderColor,
+    this.editingCellBackgroundColor,
+    this.editingCellBorderColor,
+    this.editingErrorBorderColor = const Color(0xFFD92D20),
+    this.editingCursorColor,
+    this.editingSelectionColor = const Color(0x4D2563EB),
+    this.dirtyCellIndicatorColor = const Color(0xFFD97706),
+    this.dirtyCellIndicatorSize = 5.0,
   })  : assert(rowHeight > 0, 'rowHeight must be strictly positive.'),
         assert(headerHeight > 0, 'headerHeight must be strictly positive.'),
         assert(minColumnWidth >= 16.0, 'minColumnWidth must be >= 16.0.'),
         assert(
           maxColumnWidth >= minColumnWidth,
           'maxColumnWidth must be >= minColumnWidth.',
+        ),
+        assert(
+          dirtyCellIndicatorSize >= 0.0,
+          'dirtyCellIndicatorSize must be non-negative.',
         );
 
   /// Fixed height in logical pixels for every data row (`O(1)` extent).
@@ -265,6 +301,37 @@ class DenseStyle {
   /// title (`3px` gap) instead of expanding toward the column's trailing edge.
   final bool sortIconInline;
 
+  /// Optional outline color drawn around the currently focused cell when at
+  /// least one column in the table is editable (defaults to [focusedRowBorderColor]).
+  final Color? focusedCellBorderColor;
+
+  /// Optional fill color painted inside the active inline cell editor
+  /// (defaults to [backgroundColor]).
+  final Color? editingCellBackgroundColor;
+
+  /// Optional outline color painted around the active inline cell editor
+  /// (defaults to [activeSortIconColor]).
+  final Color? editingCellBorderColor;
+
+  /// Outline color painted around the active inline cell editor when
+  /// validation fails.
+  final Color editingErrorBorderColor;
+
+  /// Optional text cursor color inside the default inline `EditableText`
+  /// (defaults to [activeSortIconColor]).
+  final Color? editingCursorColor;
+
+  /// Text selection highlight fill inside the default inline `EditableText`.
+  final Color editingSelectionColor;
+
+  /// Fill color of the top-left corner indicator triangle painted on cells with
+  /// uncommitted edits in `DenseTableController.dirtyCells`.
+  final Color dirtyCellIndicatorColor;
+
+  /// Side length in logical pixels of the top-left dirty cell corner triangle
+  /// (`0.0` hides the indicator).
+  final double dirtyCellIndicatorSize;
+
   /// Returns a copy of this [DenseStyle] with the specified fields replaced.
   DenseStyle copyWith({
     double? rowHeight,
@@ -301,6 +368,14 @@ class DenseStyle {
     TextStyle? activeHeaderTextStyle,
     bool? showUnsortedSortIcon,
     bool? sortIconInline,
+    Color? focusedCellBorderColor,
+    Color? editingCellBackgroundColor,
+    Color? editingCellBorderColor,
+    Color? editingErrorBorderColor,
+    Color? editingCursorColor,
+    Color? editingSelectionColor,
+    Color? dirtyCellIndicatorColor,
+    double? dirtyCellIndicatorSize,
   }) {
     return DenseStyle(
       rowHeight: rowHeight ?? this.rowHeight,
@@ -346,6 +421,21 @@ class DenseStyle {
           activeHeaderTextStyle ?? this.activeHeaderTextStyle,
       showUnsortedSortIcon: showUnsortedSortIcon ?? this.showUnsortedSortIcon,
       sortIconInline: sortIconInline ?? this.sortIconInline,
+      focusedCellBorderColor:
+          focusedCellBorderColor ?? this.focusedCellBorderColor,
+      editingCellBackgroundColor:
+          editingCellBackgroundColor ?? this.editingCellBackgroundColor,
+      editingCellBorderColor:
+          editingCellBorderColor ?? this.editingCellBorderColor,
+      editingErrorBorderColor:
+          editingErrorBorderColor ?? this.editingErrorBorderColor,
+      editingCursorColor: editingCursorColor ?? this.editingCursorColor,
+      editingSelectionColor:
+          editingSelectionColor ?? this.editingSelectionColor,
+      dirtyCellIndicatorColor:
+          dirtyCellIndicatorColor ?? this.dirtyCellIndicatorColor,
+      dirtyCellIndicatorSize:
+          dirtyCellIndicatorSize ?? this.dirtyCellIndicatorSize,
     );
   }
 
@@ -388,7 +478,15 @@ class DenseStyle {
         other.headerTextStyle == headerTextStyle &&
         other.activeHeaderTextStyle == activeHeaderTextStyle &&
         other.showUnsortedSortIcon == showUnsortedSortIcon &&
-        other.sortIconInline == sortIconInline;
+        other.sortIconInline == sortIconInline &&
+        other.focusedCellBorderColor == focusedCellBorderColor &&
+        other.editingCellBackgroundColor == editingCellBackgroundColor &&
+        other.editingCellBorderColor == editingCellBorderColor &&
+        other.editingErrorBorderColor == editingErrorBorderColor &&
+        other.editingCursorColor == editingCursorColor &&
+        other.editingSelectionColor == editingSelectionColor &&
+        other.dirtyCellIndicatorColor == dirtyCellIndicatorColor &&
+        other.dirtyCellIndicatorSize == dirtyCellIndicatorSize;
   }
 
   @override
@@ -427,5 +525,13 @@ class DenseStyle {
         activeHeaderTextStyle,
         showUnsortedSortIcon,
         sortIconInline,
+        focusedCellBorderColor,
+        editingCellBackgroundColor,
+        editingCellBorderColor,
+        editingErrorBorderColor,
+        editingCursorColor,
+        editingSelectionColor,
+        dirtyCellIndicatorColor,
+        dirtyCellIndicatorSize,
       ]);
 }

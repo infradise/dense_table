@@ -6,16 +6,18 @@ import 'package:flutter/foundation.dart';
 import 'dense_column.dart';
 
 /// Programmatic controller for `DenseTable` selection, stable row identity,
-/// sorting, column widths, keyboard focus, and viewport scrolling.
+/// inline cell editing, dirty cell staging, sorting, column widths, keyboard
+/// focus, and viewport scrolling.
 ///
 /// All index-based selection methods operate on **original data row indices**
 /// (`0 .. rowCount - 1`), ensuring selection identity remains stable as columns
 /// are sorted or unsorted.
 ///
-/// When `DenseTable.rowIdBuilder` is supplied, selection, keyboard focus, and
-/// the Shift-selection anchor additionally bind to **stable row IDs**
-/// ([selectedRowIds], [focusedRowId], [anchorRowId]), preserving record
-/// identity across external search filtering and live streaming mutations.
+/// When `DenseTable.rowIdBuilder` is supplied, selection, keyboard focus,
+/// inline dirty cell changes, and the Shift-selection anchor additionally bind
+/// to **stable row IDs** ([selectedRowIds], [focusedRowId], [anchorRowId]),
+/// preserving record identity across external search filtering and live
+/// streaming mutations.
 class DenseTableController extends ChangeNotifier {
   /// Creates a [DenseTableController] with optional initial selection and sort state.
   DenseTableController({
@@ -46,19 +48,33 @@ class DenseTableController extends ChangeNotifier {
     _selectedRowIds,
   );
   final Map<int, double> _columnWidths = <int, double>{};
+  final Map<DenseCellCoord, DenseCellChange> _dirtyCells =
+      <DenseCellCoord, DenseCellChange>{};
+  final Map<(Object, int), DenseCellChange> _dirtyCellsByRowId =
+      <(Object, int), DenseCellChange>{};
+  late final Map<DenseCellCoord, DenseCellChange> _dirtyCellsView =
+      UnmodifiableMapView<DenseCellCoord, DenseCellChange>(_dirtyCells);
 
   List<Object>? _boundRowIds;
   Map<Object, int>? _boundIdToIndex;
 
   DenseSortState? _sortState;
   int? _focusedOriginalRow;
+  int? _focusedColumn;
   int? _anchorOriginalRow;
   Object? _focusedRowId;
   Object? _anchorRowId;
 
+  DenseCellCoord? _editingCell;
+  Object? _editingRowId;
+  String? _editingError;
+
   void Function(int visualIndex, {Duration? duration, Curve curve})?
       _scrollToVisualRowDelegate;
   int? Function(int originalIndex)? _originalToVisualIndexDelegate;
+  bool Function(int originalRowIndex, int columnIndex)? _startEditingDelegate;
+  bool Function([String? overrideText])? _commitEditingDelegate;
+  VoidCallback? _cancelEditingDelegate;
 
   bool get _hasIdBinding => _boundRowIds != null && _boundIdToIndex != null;
 
@@ -90,6 +106,9 @@ class DenseTableController extends ChangeNotifier {
   /// Stable row ID of the keyboard-focused record when `rowIdBuilder` is active.
   Object? get focusedRowId => _focusedRowId;
 
+  /// Zero-based index of the currently focused data column, or `null` if unset.
+  int? get focusedColumn => _focusedColumn;
+
   /// Original data index of the Shift-selection range anchor row in the active
   /// dataset, or `null` if none (or if the anchor record is currently filtered out).
   int? get anchorRow => _anchorOriginalRow;
@@ -100,6 +119,60 @@ class DenseTableController extends ChangeNotifier {
 
   /// Active sort state, or `null` when rows are in their natural order.
   DenseSortState? get sortState => _sortState;
+
+  /// Coordinate of the cell currently open for inline editing, or `null` when
+  /// no cell is being edited.
+  DenseCellCoord? get editingCell => _editingCell;
+
+  /// Stable row ID of the record currently being edited when `rowIdBuilder` is
+  /// active, or `null` otherwise.
+  Object? get editingRowId => _editingRowId;
+
+  /// Whether an inline cell editing session is currently active.
+  bool get isEditing => _editingCell != null;
+
+  /// Active validation error message from `DenseColumn.validator` on
+  /// [editingCell], or `null` when valid.
+  String? get editingError => _editingError;
+
+  /// Read-only map of uncommitted dirty cell changes present in the active
+  /// dataset (`DenseCellCoord -> DenseCellChange`).
+  Map<DenseCellCoord, DenseCellChange> get dirtyCells => _dirtyCellsView;
+
+  /// Unmodifiable snapshot of all uncommitted [DenseCellChange] entries,
+  /// including edits on records temporarily hidden by an external filter when
+  /// `rowIdBuilder` is active.
+  List<DenseCellChange> get allDirtyChanges =>
+      List<DenseCellChange>.unmodifiable(
+        _hasIdBinding ? _dirtyCellsByRowId.values : _dirtyCells.values,
+      );
+
+  /// Whether at least one uncommitted dirty cell edit is staged.
+  bool get hasDirtyCells =>
+      _dirtyCells.isNotEmpty || _dirtyCellsByRowId.isNotEmpty;
+
+  /// Number of uncommitted dirty cells currently visible in the active dataset.
+  int get dirtyCellCount => _dirtyCells.length;
+
+  /// Total number of uncommitted dirty cells (including records temporarily
+  /// hidden by an external filter when `rowIdBuilder` is active).
+  int get totalDirtyCellCount =>
+      _hasIdBinding ? _dirtyCellsByRowId.length : _dirtyCells.length;
+
+  /// Returns `true` if `(rowIndex, columnIndex)` currently holds an uncommitted
+  /// dirty edit.
+  bool isCellDirty(int rowIndex, int columnIndex) =>
+      _dirtyCells.containsKey(DenseCellCoord(rowIndex, columnIndex));
+
+  /// Returns the staged [DenseCellChange] at `(rowIndex, columnIndex)`, or
+  /// `null` if the cell has not been modified.
+  DenseCellChange? dirtyChangeAt(int rowIndex, int columnIndex) =>
+      _dirtyCells[DenseCellCoord(rowIndex, columnIndex)];
+
+  /// Returns the staged text at `(rowIndex, columnIndex)`, or `null` if the
+  /// cell has not been modified.
+  String? dirtyTextAt(int rowIndex, int columnIndex) =>
+      _dirtyCells[DenseCellCoord(rowIndex, columnIndex)]?.newText;
 
   /// Returns `true` if [rowIndex] (original data index) is currently selected.
   bool isRowSelected(int rowIndex) => _selectedRows.contains(rowIndex);
@@ -440,6 +513,175 @@ class DenseTableController extends ChangeNotifier {
     }
   }
 
+  /// Updates the focused column index without modifying row selection.
+  void setFocusedColumn(int? columnIndex) {
+    if (_focusedColumn == columnIndex) {
+      return;
+    }
+    _focusedColumn = columnIndex;
+    notifyListeners();
+  }
+
+  /// Updates both [focusedRow] and [focusedColumn] in a single notification.
+  void setFocusedCell(
+    int? originalRowIndex,
+    int? columnIndex, {
+    bool updateAnchor = false,
+  }) {
+    var changed = false;
+    final mappedId =
+        originalRowIndex != null ? rowIdAt(originalRowIndex) : null;
+
+    if (_focusedOriginalRow != originalRowIndex) {
+      _focusedOriginalRow = originalRowIndex;
+      changed = true;
+    }
+    if (_focusedColumn != columnIndex) {
+      _focusedColumn = columnIndex;
+      changed = true;
+    }
+    if (_hasIdBinding && _focusedRowId != mappedId) {
+      _focusedRowId = mappedId;
+      changed = true;
+    }
+    if (updateAnchor) {
+      if (_anchorOriginalRow != originalRowIndex) {
+        _anchorOriginalRow = originalRowIndex;
+        changed = true;
+      }
+      if (_hasIdBinding && _anchorRowId != mappedId) {
+        _anchorRowId = mappedId;
+        changed = true;
+      }
+    }
+    if (changed) {
+      notifyListeners();
+    }
+  }
+
+  /// Starts an inline cell editing session at `(originalRowIndex, columnIndex)`
+  /// on the attached `DenseTable`, returning `true` if the cell is editable.
+  bool startEditing(int originalRowIndex, int columnIndex) =>
+      _startEditingDelegate?.call(originalRowIndex, columnIndex) ?? false;
+
+  /// Validates and commits the active inline cell edit (optionally substituting
+  /// [overrideText]), returning `true` when validation succeeds or no edit is
+  /// active.
+  bool commitEditing([String? overrideText]) =>
+      _commitEditingDelegate?.call(overrideText) ?? true;
+
+  /// Discards any draft text and closes the active inline cell editor.
+  void cancelEditing() {
+    _cancelEditingDelegate?.call();
+  }
+
+  /// Records or updates a committed [DenseCellChange] in [dirtyCells].
+  ///
+  /// Preserves the original baseline `previousValue` across consecutive edits
+  /// to the same cell. When [revertIfUnchanged] is `true` and `change.newText`
+  /// reverts back to the baseline value string, the cell is automatically
+  /// removed from [dirtyCells].
+  void recordCellChange(
+    DenseCellChange change, {
+    bool revertIfUnchanged = true,
+    bool notify = true,
+  }) {
+    final coord = change.coord;
+    final effectiveRowId = change.rowId ?? rowIdAt(coord.rowIndex);
+    final existing = (_hasIdBinding && effectiveRowId != null)
+        ? _dirtyCellsByRowId[(effectiveRowId, coord.columnIndex)]
+        : _dirtyCells[coord];
+    final baseline =
+        existing != null ? existing.previousValue : change.previousValue;
+    final baselineString = baseline?.toString() ?? '';
+
+    if (revertIfUnchanged && change.newText == baselineString) {
+      final removedVisible = _dirtyCells.remove(coord) != null;
+      var removedById = false;
+      if (effectiveRowId != null) {
+        removedById =
+            _dirtyCellsByRowId.remove((effectiveRowId, coord.columnIndex)) !=
+                null;
+      }
+      if ((removedVisible || removedById) && notify) {
+        notifyListeners();
+      }
+      return;
+    }
+
+    final normalized = DenseCellChange(
+      coord: coord,
+      rowId: effectiveRowId,
+      previousValue: baseline,
+      newText: change.newText,
+    );
+    if (existing == normalized && _dirtyCells[coord] == normalized) {
+      return;
+    }
+
+    _dirtyCells[coord] = normalized;
+    if (_hasIdBinding && effectiveRowId != null) {
+      _dirtyCellsByRowId[(effectiveRowId, coord.columnIndex)] = normalized;
+    }
+    if (notify) {
+      notifyListeners();
+    }
+  }
+
+  /// Removes any uncommitted dirty state at `(originalRowIndex, columnIndex)`.
+  void clearDirtyCell(int originalRowIndex, int columnIndex) {
+    final coord = DenseCellCoord(originalRowIndex, columnIndex);
+    final removed = _dirtyCells.remove(coord);
+    var removedById = false;
+    final id = removed?.rowId ?? rowIdAt(originalRowIndex);
+    if (id != null) {
+      removedById = _dirtyCellsByRowId.remove((id, columnIndex)) != null;
+    }
+    if (removed != null || removedById) {
+      notifyListeners();
+    }
+  }
+
+  /// Clears all uncommitted dirty cell edits across both visible and hidden
+  /// records (typically called after committing changes to a database or API).
+  void clearDirtyCells() {
+    if (_dirtyCells.isEmpty && _dirtyCellsByRowId.isEmpty) {
+      return;
+    }
+    _dirtyCells.clear();
+    _dirtyCellsByRowId.clear();
+    notifyListeners();
+  }
+
+  /// Synchronizes the active inline editing session state from `DenseTable`.
+  void syncEditingSession({
+    required DenseCellCoord? coord,
+    Object? rowId,
+    String? errorText,
+    bool notify = true,
+  }) {
+    if (_editingCell == coord &&
+        _editingRowId == rowId &&
+        _editingError == errorText) {
+      return;
+    }
+    _editingCell = coord;
+    _editingRowId = rowId;
+    _editingError = errorText;
+    if (notify) {
+      notifyListeners();
+    }
+  }
+
+  /// Clears [editingError] while keeping [editingCell] open for editing.
+  void clearEditingError() {
+    if (_editingError == null) {
+      return;
+    }
+    _editingError = null;
+    notifyListeners();
+  }
+
   /// Sets the active [DenseSortState] (pass `null` to clear sorting).
   void setSort(DenseSortState? sortState) {
     if (_sortState == sortState) {
@@ -641,6 +883,50 @@ class DenseTableController extends ChangeNotifier {
       changed = true;
     }
 
+    if (wasUnbound && _dirtyCellsByRowId.isEmpty && _dirtyCells.isNotEmpty) {
+      for (final entry in _dirtyCells.entries) {
+        final idx = entry.key.rowIndex;
+        if (idx >= 0 && idx < rowIds.length) {
+          final id = rowIds[idx];
+          _dirtyCellsByRowId[(id, entry.key.columnIndex)] =
+              entry.value.copyWith(rowId: id);
+        }
+      }
+    }
+
+    if (_dirtyCellsByRowId.isNotEmpty || _dirtyCells.isNotEmpty) {
+      final remappedDirty = <DenseCellCoord, DenseCellChange>{};
+      for (final entry in _dirtyCellsByRowId.entries) {
+        final mappedIdx = idToIndex[entry.key.$1];
+        if (mappedIdx != null) {
+          final nextCoord = DenseCellCoord(mappedIdx, entry.key.$2);
+          final updated = entry.value.coord == nextCoord
+              ? entry.value
+              : entry.value.copyWith(coord: nextCoord);
+          remappedDirty[nextCoord] = updated;
+        }
+      }
+      if (!mapEquals(_dirtyCells, remappedDirty)) {
+        _dirtyCells
+          ..clear()
+          ..addAll(remappedDirty);
+        changed = true;
+      }
+    }
+
+    if (_editingCell != null && _editingRowId != null) {
+      final nextEditIdx = idToIndex[_editingRowId!];
+      if (nextEditIdx == null) {
+        _editingCell = null;
+        _editingRowId = null;
+        _editingError = null;
+        changed = true;
+      } else if (nextEditIdx != _editingCell!.rowIndex) {
+        _editingCell = DenseCellCoord(nextEditIdx, _editingCell!.columnIndex);
+        changed = true;
+      }
+    }
+
     if (changed && notify) {
       notifyListeners();
     }
@@ -682,23 +968,49 @@ class DenseTableController extends ChangeNotifier {
       _anchorOriginalRow = _focusedOriginalRow;
       changed = true;
     }
+    if (_dirtyCells.isNotEmpty) {
+      final beforeDirty = _dirtyCells.length;
+      _dirtyCells.removeWhere(
+        (coord, _) => coord.rowIndex < 0 || coord.rowIndex >= rowCount,
+      );
+      if (_dirtyCells.length != beforeDirty) {
+        changed = true;
+      }
+    }
+    if (_editingCell != null &&
+        (_editingCell!.rowIndex < 0 || _editingCell!.rowIndex >= rowCount)) {
+      _editingCell = null;
+      _editingRowId = null;
+      _editingError = null;
+      changed = true;
+    }
     return changed;
   }
 
-  /// Attaches viewport delegates from the mounted `DenseTable` state.
+  /// Attaches viewport and inline-editing delegates from the mounted
+  /// `DenseTable` state.
   void attachTableDelegates({
     required void Function(int visualIndex, {Duration? duration, Curve curve})
         scrollToVisualRow,
     required int? Function(int originalIndex) originalToVisualIndex,
+    bool Function(int originalRowIndex, int columnIndex)? startEditing,
+    bool Function([String? overrideText])? commitEditing,
+    VoidCallback? cancelEditing,
   }) {
     _scrollToVisualRowDelegate = scrollToVisualRow;
     _originalToVisualIndexDelegate = originalToVisualIndex;
+    _startEditingDelegate = startEditing;
+    _commitEditingDelegate = commitEditing;
+    _cancelEditingDelegate = cancelEditing;
   }
 
   /// Detaches viewport delegates when `DenseTable` unmounts or swaps controllers.
   void detachTableDelegates() {
     _scrollToVisualRowDelegate = null;
     _originalToVisualIndexDelegate = null;
+    _startEditingDelegate = null;
+    _commitEditingDelegate = null;
+    _cancelEditingDelegate = null;
     _boundRowIds = null;
     _boundIdToIndex = null;
   }

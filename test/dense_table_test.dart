@@ -918,4 +918,494 @@ void main() {
       },
     );
   });
+
+  group('v1.3 Spreadsheet-Style Inline Cell Editing & Dirty Staging', () {
+    testWidgets(
+      'supports double-click & F2 entry, Enter commit + move down, and Escape cancel with table focus retention',
+      (tester) async {
+        final controller = DenseTableController();
+        final tableFocus = FocusNode();
+        final committed = <DenseCellChange>[];
+        var activatedCount = 0;
+
+        await tester.pumpWidget(
+          _wrapTestHarness(
+            SizedBox(
+              width: 600,
+              height: 260,
+              child: DenseTable(
+                controller: controller,
+                focusNode: tableFocus,
+                selectionMode: DenseSelectionMode.single,
+                onCellEditCommitted: committed.add,
+                onRowActivated: (_) => activatedCount++,
+                headers: const <String>['ID', 'Service', 'Port'],
+                columns: const <DenseColumn>[
+                  DenseColumn(title: 'ID', initialWidth: 80),
+                  DenseColumn(
+                    title: 'Service',
+                    initialWidth: 220,
+                    editable: true,
+                  ),
+                  DenseColumn(
+                    title: 'Port',
+                    initialWidth: 120,
+                    editable: true,
+                    alignment: Alignment.centerRight,
+                  ),
+                ],
+                data: const <List<dynamic>>[
+                  <dynamic>[1, 'auth-api', 8080],
+                  <dynamic>[2, 'billing-worker', 9090],
+                  <dynamic>[3, 'cache-proxy', 6379],
+                ],
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        // Double-clicking a non-editable column ('ID') triggers row activation, NOT editing.
+        await tester.tap(find.text('1'));
+        await tester.pump(const Duration(milliseconds: 40));
+        await tester.tap(find.text('1'));
+        await tester.pump();
+        expect(controller.isEditing, isFalse);
+        expect(activatedCount, 1);
+
+        // Double-clicking editable 'Service' cell (0, 1) opens EditableText without firing onRowActivated.
+        await tester.tap(find.text('auth-api'));
+        await tester.pump(const Duration(milliseconds: 40));
+        await tester.tap(find.text('auth-api'));
+        await tester.pump();
+
+        expect(controller.isEditing, isTrue);
+        expect(controller.editingCell, const DenseCellCoord(0, 1));
+        expect(activatedCount, 1);
+        expect(find.byType(EditableText), findsOneWidget);
+
+        // Type new service name and commit via Enter -> moves focus to row 1, col 1.
+        await tester.enterText(find.byType(EditableText), 'identity-api');
+        await tester.pump();
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+
+        expect(controller.isEditing, isFalse);
+        expect(tableFocus.hasFocus, isTrue);
+        expect(committed.length, 1);
+        expect(committed.single.coord, const DenseCellCoord(0, 1));
+        expect(committed.single.previousValue, 'auth-api');
+        expect(committed.single.newText, 'identity-api');
+        expect(controller.isCellDirty(0, 1), isTrue);
+        expect(find.text('identity-api'), findsOneWidget);
+        expect(controller.focusedRow, 1);
+        expect(controller.focusedColumn, 1);
+
+        // Press F2 on focused row 1, col 1 -> enter draft -> Escape cancels without committing.
+        await tester.sendKeyEvent(LogicalKeyboardKey.f2);
+        await tester.pump();
+        expect(controller.editingCell, const DenseCellCoord(1, 1));
+
+        await tester.enterText(find.byType(EditableText), 'aborted-draft');
+        await tester.pump();
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pump();
+
+        expect(controller.isEditing, isFalse);
+        expect(tableFocus.hasFocus, isTrue);
+        expect(committed.length, 1);
+        expect(controller.isCellDirty(1, 1), isFalse);
+        expect(find.text('billing-worker'), findsOneWidget);
+
+        tableFocus.dispose();
+        controller.dispose();
+      },
+    );
+
+    testWidgets(
+      'navigates editable columns via Tab & Shift+Tab with row wrapping and 2D horizontal auto-scroll',
+      (tester) async {
+        final controller = DenseTableController();
+        final hScroll = ScrollController();
+
+        await tester.pumpWidget(
+          _wrapTestHarness(
+            SizedBox(
+              width: 320,
+              height: 240,
+              child: DenseTable(
+                controller: controller,
+                horizontalScrollController: hScroll,
+                expandLastColumn: false,
+                headers: const <String>[
+                  'PK',
+                  'Name',
+                  'System',
+                  'ReqCPU',
+                  'LimMem',
+                ],
+                columns: const <DenseColumn>[
+                  DenseColumn(title: 'PK', initialWidth: 70),
+                  DenseColumn(title: 'Name', initialWidth: 140, editable: true),
+                  DenseColumn(
+                    title: 'System',
+                    initialWidth: 120,
+                    editable: false,
+                  ),
+                  DenseColumn(
+                    title: 'ReqCPU',
+                    initialWidth: 160,
+                    editable: true,
+                  ),
+                  DenseColumn(
+                    title: 'LimMem',
+                    initialWidth: 200,
+                    editable: true,
+                  ),
+                ],
+                data: const <List<dynamic>>[
+                  <dynamic>['r0', 'api', 'locked', '100m', '256Mi'],
+                  <dynamic>['r1', 'web', 'locked', '200m', '512Mi'],
+                ],
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(hScroll.offset, 0.0);
+        expect(controller.startEditing(0, 1), isTrue);
+        await tester.pump();
+        expect(controller.editingCell, const DenseCellCoord(0, 1));
+
+        await tester.enterText(find.byType(EditableText), 'api-v2');
+        await tester.pump();
+
+        // Tab -> commits (0, 1), skips non-editable col 2 ('System'), opens (0, 3) ('ReqCPU').
+        await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+        await tester.pump();
+        expect(controller.editingCell, const DenseCellCoord(0, 3));
+        expect(controller.dirtyTextAt(0, 1), 'api-v2');
+
+        await tester.enterText(find.byType(EditableText), '250m');
+        await tester.pump();
+
+        // Tab -> commits (0, 3) and opens off-screen right column (0, 4) ('LimMem'), scrolling horizontally!
+        await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+        await tester.pump();
+        expect(controller.editingCell, const DenseCellCoord(0, 4));
+        expect(hScroll.offset, greaterThan(150.0));
+
+        await tester.enterText(find.byType(EditableText), '1024Mi');
+        await tester.pump();
+
+        // Tab at end of row 0 -> wraps to first editable column of row 1: (1, 1) and scrolls back left!
+        await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+        await tester.pump();
+        expect(controller.editingCell, const DenseCellCoord(1, 1));
+        expect(hScroll.offset, lessThan(100.0));
+        expect(controller.dirtyCellCount, 3);
+
+        // Shift+Tab from (1, 1) -> wraps backward to (0, 4) with '1024Mi' loaded!
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+        await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+        await tester.pump();
+        expect(controller.editingCell, const DenseCellCoord(0, 4));
+        final editor = tester.widget<EditableText>(find.byType(EditableText));
+        expect(editor.controller.text, '1024Mi');
+
+        hScroll.dispose();
+        controller.dispose();
+      },
+    );
+
+    testWidgets(
+      'enforces cell validator, clears error on edit, and clears dirty state when reverted to baseline',
+      (tester) async {
+        final controller = DenseTableController();
+        final committed = <DenseCellChange>[];
+
+        await tester.pumpWidget(
+          _wrapTestHarness(
+            SizedBox(
+              width: 500,
+              height: 220,
+              child: DenseTable(
+                controller: controller,
+                onCellEditCommitted: committed.add,
+                headers: const <String>['ID', 'Replicas'],
+                columns: <DenseColumn>[
+                  const DenseColumn(title: 'ID', initialWidth: 100),
+                  DenseColumn(
+                    title: 'Replicas',
+                    initialWidth: 160,
+                    editable: true,
+                    validator: (_, __, ___, draft) {
+                      final parsed = int.tryParse(draft);
+                      if (parsed == null || parsed < 0) {
+                        return 'Replicas must be a non-negative integer';
+                      }
+                      return null;
+                    },
+                  ),
+                ],
+                data: const <List<dynamic>>[
+                  <dynamic>['deploy-1', 3],
+                ],
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(controller.startEditing(0, 1), isTrue);
+        await tester.pump();
+
+        // Invalid input blocks commit and exposes editingError.
+        await tester.enterText(find.byType(EditableText), '-5');
+        await tester.pump();
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+
+        expect(controller.isEditing, isTrue);
+        expect(
+          controller.editingError,
+          'Replicas must be a non-negative integer',
+        );
+        expect(committed, isEmpty);
+        expect(controller.hasDirtyCells, isFalse);
+
+        // Typing valid text immediately clears editingError, and Enter commits.
+        await tester.enterText(find.byType(EditableText), '8');
+        await tester.pump();
+        expect(controller.editingError, isNull);
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+
+        expect(controller.isEditing, isFalse);
+        expect(controller.dirtyCellCount, 1);
+        expect(controller.dirtyChangeAt(0, 1)?.previousValue, 3);
+        expect(controller.dirtyTextAt(0, 1), '8');
+
+        // Editing a second time to '12' preserves baseline previousValue == 3.
+        expect(controller.startEditing(0, 1), isTrue);
+        await tester.pump();
+        await tester.enterText(find.byType(EditableText), '12');
+        await tester.pump();
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+        expect(controller.dirtyChangeAt(0, 1)?.previousValue, 3);
+        expect(controller.dirtyTextAt(0, 1), '12');
+
+        // Editing back to baseline '3' automatically clears dirty state!
+        expect(controller.startEditing(0, 1), isTrue);
+        await tester.pump();
+        await tester.enterText(find.byType(EditableText), '3');
+        await tester.pump();
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+        expect(controller.hasDirtyCells, isFalse);
+        expect(controller.dirtyCellCount, 0);
+
+        controller.dispose();
+      },
+    );
+
+    testWidgets(
+      'reconciles dirtyCells across external filtering via rowIdBuilder and honors canEditCell',
+      (tester) async {
+        final controller = DenseTableController();
+        final allRecords = <({String id, String role})>[
+          (id: 'u-1', role: 'system'),
+          (id: 'u-2', role: 'viewer'),
+          (id: 'u-3', role: 'editor'),
+        ];
+        var filterQuery = '';
+
+        late StateSetter rebuildHost;
+
+        await tester.pumpWidget(
+          StatefulBuilder(
+            builder: (context, setHostState) {
+              rebuildHost = setHostState;
+              final visible = allRecords
+                  .where(
+                      (r) => filterQuery.isEmpty || r.id.contains(filterQuery))
+                  .toList(growable: false);
+
+              return _wrapTestHarness(
+                SizedBox(
+                  width: 500,
+                  height: 240,
+                  child: DenseTable.builder(
+                    controller: controller,
+                    rowCount: visible.length,
+                    rowIdBuilder: (row) => visible[row].id,
+                    rawCellValue: (row, col) =>
+                        col == 0 ? visible[row].id : visible[row].role,
+                    canEditCell: (row, col) => visible[row].id != 'u-1',
+                    columns: const <DenseColumn>[
+                      DenseColumn(title: 'ID', initialWidth: 120),
+                      DenseColumn(
+                        title: 'Role',
+                        initialWidth: 200,
+                        editable: true,
+                      ),
+                    ],
+                    cellBuilder: (context, row, col) => Text(
+                      col == 0 ? visible[row].id : visible[row].role,
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        // System row 'u-1' is blocked by canEditCell.
+        expect(controller.startEditing(0, 1), isFalse);
+
+        // Edit 'u-3' (initially row 2) -> 'admin'.
+        expect(controller.startEditing(2, 1), isTrue);
+        await tester.pump();
+        await tester.enterText(find.byType(EditableText), 'admin');
+        await tester.pump();
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pump();
+
+        expect(controller.isCellDirty(2, 1), isTrue);
+        expect(find.text('admin'), findsOneWidget);
+
+        // Filter to 'u-3' -> 'u-3' shifts to row index 0, dirty state follows 'u-3'!
+        rebuildHost(() => filterQuery = 'u-3');
+        await tester.pumpAndSettle();
+        expect(controller.dirtyCellCount, 1);
+        expect(controller.isCellDirty(0, 1), isTrue);
+        expect(find.text('admin'), findsOneWidget);
+
+        // Filter to 'u-2' -> 'u-3' is hidden, but allDirtyChanges & totalDirtyCellCount retain it!
+        rebuildHost(() => filterQuery = 'u-2');
+        await tester.pumpAndSettle();
+        expect(controller.dirtyCellCount, 0);
+        expect(controller.totalDirtyCellCount, 1);
+        expect(controller.allDirtyChanges.single.rowId, 'u-3');
+        expect(controller.allDirtyChanges.single.newText, 'admin');
+
+        // Clear filter -> 'u-3' returns at index 2 with dirty 'admin' intact!
+        rebuildHost(() => filterQuery = '');
+        await tester.pumpAndSettle();
+        expect(controller.dirtyCellCount, 1);
+        expect(controller.isCellDirty(2, 1), isTrue);
+        expect(find.text('admin'), findsOneWidget);
+
+        controller.clearDirtyCells();
+        await tester.pump();
+        expect(controller.hasDirtyCells, isFalse);
+        expect(find.text('editor'), findsOneWidget);
+
+        controller.dispose();
+      },
+    );
+
+    testWidgets(
+      'preserves active inline draft across 100,000-row off-screen scroll and supports custom editorBuilder',
+      (tester) async {
+        final controller = DenseTableController();
+
+        await tester.pumpWidget(
+          _wrapTestHarness(
+            SizedBox(
+              width: 600,
+              height: 260,
+              child: DenseTable.builder(
+                controller: controller,
+                editTrigger: DenseEditTrigger.singleTap,
+                rowCount: 100000,
+                rawCellValue: (row, col) =>
+                    col == 0 ? 'Row $row' : (col == 1 ? 'val-$row' : 'IDLE'),
+                columns: <DenseColumn>[
+                  const DenseColumn(title: 'Key', initialWidth: 140),
+                  const DenseColumn(
+                    title: 'Value',
+                    initialWidth: 220,
+                    editable: true,
+                  ),
+                  DenseColumn(
+                    title: 'Mode',
+                    initialWidth: 160,
+                    editable: true,
+                    editorBuilder: (context, editCtx) {
+                      return GestureDetector(
+                        key: const ValueKey<String>('custom_enum_pick'),
+                        onTap: () => editCtx.commit('TURBO'),
+                        child: Text('PICK:${editCtx.initialText}'),
+                      );
+                    },
+                  ),
+                ],
+                cellBuilder: (context, row, col) {
+                  if (col == 0) {
+                    return Text('Row $row');
+                  }
+                  if (col == 1) {
+                    return Text('val-$row');
+                  }
+                  return const Text('IDLE');
+                },
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        // Single-tap on 'val-0' (DenseEditTrigger.singleTap) immediately opens editor!
+        await tester.tap(find.text('val-0'));
+        await tester.pump();
+        expect(controller.editingCell, const DenseCellCoord(0, 1));
+
+        await tester.enterText(
+          find.byType(EditableText),
+          'draft-survives-100k-scroll',
+        );
+        await tester.pump();
+
+        // Scroll far off-screen to row 50,000 and back to row 0!
+        controller.scrollToVisualRow(50000);
+        await tester.pumpAndSettle();
+        expect(find.text('Row 50000'), findsOneWidget);
+        expect(controller.isEditing, isTrue);
+
+        controller.scrollToVisualRow(0);
+        await tester.pumpAndSettle();
+        expect(controller.editingCell, const DenseCellCoord(0, 1));
+        expect(
+          tester
+              .widget<EditableText>(find.byType(EditableText))
+              .controller
+              .text,
+          'draft-survives-100k-scroll',
+        );
+
+        // Commit via controller.commitEditing()!
+        expect(controller.commitEditing(), isTrue);
+        await tester.pump();
+        expect(find.text('draft-survives-100k-scroll'), findsOneWidget);
+
+        // Single-tap custom editorBuilder column (0, 2) and commit custom enum!
+        await tester.tap(find.text('IDLE').first);
+        await tester.pump();
+        expect(find.text('PICK:IDLE'), findsOneWidget);
+        await tester
+            .tap(find.byKey(const ValueKey<String>('custom_enum_pick')));
+        await tester.pump();
+        expect(controller.isEditing, isFalse);
+        expect(controller.dirtyTextAt(0, 2), 'TURBO');
+        expect(find.text('TURBO'), findsOneWidget);
+
+        controller.dispose();
+      },
+    );
+  });
 }

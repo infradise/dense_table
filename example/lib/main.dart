@@ -112,7 +112,7 @@ class _DenseTableDemoAppState extends State<DenseTableDemoApp> {
     final visibleCount = _filteredSourceIndices.length;
 
     return WidgetsApp(
-      title: 'DenseTable 1.2.0 Showcase',
+      title: 'DenseTable 1.3.0 Showcase',
       color: const Color(0xFF2563EB),
       debugShowCheckedModeBanner: false,
       pageRouteBuilder: <T>(RouteSettings settings, WidgetBuilder builder) {
@@ -142,7 +142,7 @@ class _DenseTableDemoAppState extends State<DenseTableDemoApp> {
                 alignment: WrapAlignment.spaceBetween,
                 children: <Widget>[
                   Text(
-                    'DenseTable 1.2.0 Showcase',
+                    'DenseTable 1.3.0 Showcase',
                     style: TextStyle(
                       color: fgColor,
                       fontSize: 15.0,
@@ -210,6 +210,11 @@ class _DenseTableDemoAppState extends State<DenseTableDemoApp> {
                         onTap: () => _controller.scrollToVisualRow(0),
                       ),
                       _ToolbarButton(
+                        label: 'Discard Edits',
+                        darkMode: _darkMode,
+                        onTap: _controller.clearDirtyCells,
+                      ),
+                      _ToolbarButton(
                         label: _darkMode ? 'Light Theme' : 'Dark Theme',
                         darkMode: _darkMode,
                         onTap: () => setState(() => _darkMode = !_darkMode),
@@ -237,6 +242,7 @@ class _DenseTableDemoAppState extends State<DenseTableDemoApp> {
                           'Dataset: $visibleCount rows  •  '
                           'Selected: ${_controller.selectedCount} '
                           '(IDs: ${_controller.totalSelectedIdCount})  •  '
+                          'Edited: ${_controller.totalDirtyCellCount}  •  '
                           'Anchor: $anchorLabel  •  '
                           'Sort: $sortLabel'
                           '${_lastActivatedPodId != null ? '  •  Activated: $_lastActivatedPodId' : ''}',
@@ -262,36 +268,56 @@ class _DenseTableDemoAppState extends State<DenseTableDemoApp> {
                         rawCellValue: _rawValue,
                         onRowActivated: (rowIndex) {
                           setState(
-                              () => _lastActivatedPodId = _rowId(rowIndex));
+                            () => _lastActivatedPodId = _rowId(rowIndex),
+                          );
                         },
-                        columns: const <DenseColumn>[
-                          DenseColumn(
+                        columns: <DenseColumn>[
+                          const DenseColumn(
                             title: 'ID',
                             initialWidth: 80.0,
                             alignment: Alignment.centerRight,
                           ),
-                          DenseColumn(
+                          const DenseColumn(
                             title: 'Namespace',
                             initialWidth: 140.0,
+                            editable: true,
                           ),
-                          DenseColumn(
+                          const DenseColumn(
                             title: 'Workload Name',
                             initialWidth: 220.0,
                             flex: 1.0,
+                            editable: true,
                           ),
-                          DenseColumn(
+                          const DenseColumn(
                             title: 'Status',
                             initialWidth: 110.0,
+                            editable: true,
                           ),
                           DenseColumn(
                             title: 'Latency (ms)',
                             initialWidth: 120.0,
                             alignment: Alignment.centerRight,
+                            editable: true,
+                            validator: (_, __, ___, draft) {
+                              final parsed = double.tryParse(draft);
+                              if (parsed == null || parsed < 0) {
+                                return 'Enter a non-negative number';
+                              }
+                              return null;
+                            },
                           ),
                           DenseColumn(
                             title: 'Memory (MiB)',
                             initialWidth: 120.0,
                             alignment: Alignment.centerRight,
+                            editable: true,
+                            validator: (_, __, ___, draft) {
+                              final parsed = int.tryParse(draft);
+                              if (parsed == null || parsed <= 0) {
+                                return 'Enter a positive integer';
+                              }
+                              return null;
+                            },
                           ),
                         ],
                         cellBuilder: (context, row, col) {

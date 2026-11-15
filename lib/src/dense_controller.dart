@@ -449,21 +449,50 @@ class DenseTableController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Cycles sorting on [columnIndex]: `ascending -> descending -> null`.
-  void toggleSortColumn(int columnIndex) {
+  /// Cycles sorting on [columnIndex] according to [cycle] and
+  /// [initialDirection].
+  ///
+  /// - [DenseSortCycle.tristate] (default):
+  ///   `initialDirection -> opposite -> null` (unsorted).
+  /// - [DenseSortCycle.toggle]:
+  ///   `initialDirection -> opposite -> initialDirection` (2-state toggle).
+  void toggleSortColumn(
+    int columnIndex, {
+    DenseSortCycle cycle = DenseSortCycle.tristate,
+    DenseSortDirection initialDirection = DenseSortDirection.ascending,
+  }) {
     final current = _sortState;
     if (current == null || current.columnIndex != columnIndex) {
       setSort(
         DenseSortState(
           columnIndex: columnIndex,
-          direction: DenseSortDirection.ascending,
+          direction: initialDirection,
         ),
       );
-    } else if (current.direction == DenseSortDirection.ascending) {
+      return;
+    }
+
+    if (cycle == DenseSortCycle.toggle) {
+      final nextDir = current.direction == DenseSortDirection.ascending
+          ? DenseSortDirection.descending
+          : DenseSortDirection.ascending;
       setSort(
         DenseSortState(
           columnIndex: columnIndex,
-          direction: DenseSortDirection.descending,
+          direction: nextDir,
+        ),
+      );
+      return;
+    }
+
+    final opposite = initialDirection == DenseSortDirection.ascending
+        ? DenseSortDirection.descending
+        : DenseSortDirection.ascending;
+    if (current.direction == initialDirection) {
+      setSort(
+        DenseSortState(
+          columnIndex: columnIndex,
+          direction: opposite,
         ),
       );
     } else {

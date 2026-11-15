@@ -22,6 +22,16 @@ enum DenseSortDirection {
   descending,
 }
 
+/// Header click cycling behavior for sortable columns in `DenseTable`.
+enum DenseSortCycle {
+  /// Cycles `initialSortDirection -> opposite -> unsorted (null)`.
+  tristate,
+
+  /// Toggles strictly between `ascending` and `descending` once sorted,
+  /// starting at `DenseColumn.initialSortDirection` when switching columns.
+  toggle,
+}
+
 /// Immutable representation of the active sort column and direction.
 @immutable
 class DenseSortState {
@@ -81,6 +91,89 @@ typedef DenseRawValueGetter = Object? Function(int rowIndex, int columnIndex);
 /// insertions or deletions.
 typedef DenseRowIdGetter = Object Function(int rowIndex);
 
+/// Signature for building custom header content for [column] with awareness
+/// of its current [sortDirection] (`null` when unsorted).
+typedef DenseHeaderCellBuilder = Widget Function(
+  BuildContext context,
+  DenseColumn column,
+  int columnIndex,
+  DenseSortDirection? sortDirection,
+);
+
+/// Signature for building a custom sort indicator widget for [direction]
+/// (`null` when the sortable column is currently unsorted).
+typedef DenseSortIconBuilder = Widget Function(
+  BuildContext context,
+  DenseSortDirection? direction,
+);
+
+/// Describes a vertically merged cell spanning [rowSpan] consecutive visual
+/// rows starting at [startRow].
+@immutable
+class DenseRowSpan {
+  /// Creates a [DenseRowSpan] starting at [startRow] and covering [rowSpan]
+  /// consecutive visual rows (`startRow .. startRow + rowSpan - 1`).
+  const DenseRowSpan({
+    required this.startRow,
+    required this.rowSpan,
+    this.backgroundColor,
+    this.stickyViewportAlignment = true,
+  })  : assert(startRow >= 0, 'startRow must be non-negative.'),
+        assert(rowSpan >= 1, 'rowSpan must be at least 1.');
+
+  /// Zero-based visual row index where this merged cell begins.
+  final int startRow;
+
+  /// Number of consecutive visual rows covered by this merged cell.
+  final int rowSpan;
+
+  /// Optional semantic background fill color painted inside this merged cell.
+  final Color? backgroundColor;
+
+  /// Whether cell content stays aligned within the visible viewport slice of
+  /// tall multi-row spans when partially scrolled off-screen.
+  final bool stickyViewportAlignment;
+
+  /// Exclusive ending visual row index (`startRow + rowSpan`).
+  int get endRowExclusive => startRow + rowSpan;
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) {
+      return true;
+    }
+    return other is DenseRowSpan &&
+        other.startRow == startRow &&
+        other.rowSpan == rowSpan &&
+        other.backgroundColor == backgroundColor &&
+        other.stickyViewportAlignment == stickyViewportAlignment;
+  }
+
+  @override
+  int get hashCode => Object.hash(
+        startRow,
+        rowSpan,
+        backgroundColor,
+        stickyViewportAlignment,
+      );
+
+  @override
+  String toString() => 'DenseRowSpan(startRow: $startRow, rowSpan: $rowSpan)';
+}
+
+/// Signature resolving an optional [DenseRowSpan] covering
+/// `(visualRowIndex, columnIndex)`.
+///
+/// Return `null` when `(visualRowIndex, columnIndex)` is a standard single-row
+/// cell. When a cell spans multiple rows (`rowSpan > 1`), every visual row in
+/// `startRow .. startRow + rowSpan - 1` must return the covering [DenseRowSpan]
+/// so the virtualized viewport keeps the merged cell visible even after
+/// [DenseRowSpan.startRow] scrolls above the top of the viewport.
+typedef DenseRowSpanResolver = DenseRowSpan? Function(
+  int visualRowIndex,
+  int columnIndex,
+);
+
 /// Rich configuration for a single column in `DenseTable`.
 @immutable
 class DenseColumn {
@@ -93,12 +186,16 @@ class DenseColumn {
     this.flex,
     this.resizable = true,
     this.sortable = true,
+    this.initialSortDirection = DenseSortDirection.ascending,
     this.alignment = Alignment.centerLeft,
     this.comparator,
+    this.headerKey,
     this.headerChild,
+    this.headerBuilder,
   }) : assert(initialWidth > 0, 'initialWidth must be strictly positive.');
 
-  /// Display title shown in the column header when [headerChild] is null.
+  /// Display title shown in the column header when [headerChild] and
+  /// [headerBuilder] are null.
   final String title;
 
   /// Initial width of this column in logical pixels.
@@ -120,14 +217,24 @@ class DenseColumn {
   /// Whether clicking this column header sorts the table (when sorting is enabled).
   final bool sortable;
 
+  /// Initial [DenseSortDirection] applied when this column is first clicked.
+  final DenseSortDirection initialSortDirection;
+
   /// Alignment applied to cells and header content within this column.
   final AlignmentGeometry alignment;
 
   /// Optional custom comparator used when sorting by this column.
   final DenseCellComparator? comparator;
 
+  /// Optional key attached to the interactive header cell container.
+  final Key? headerKey;
+
   /// Optional custom widget rendered in place of [title] inside the header cell.
   final Widget? headerChild;
+
+  /// Optional sort-aware builder for full header cell content customization
+  /// (such as icon-only headers with corner sort badges).
+  final DenseHeaderCellBuilder? headerBuilder;
 }
 
 /// Default zero-dependency smart comparator for `DenseTable` cell values.

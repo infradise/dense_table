@@ -22,9 +22,10 @@ Flutter's built-in `DataTable` instantiates every cell eagerly in a single `Rend
 
 - **True `O(1)` Fixed-Extent Virtualization (`100,000+` Rows)**: Built on fixed-extent viewport math (`rowHeight`) and lazy `DenseTable.builder` cell construction so only the ~25–50 visible rows are mounted, and scrollbar thumb drags to row `99,999` resolve in `O(1)` arithmetic.
 - **Stable Row Identity (`rowIdBuilder`)**: Anchors multi-row selection, keyboard focus, and `Shift`-range extension to stable domain record IDs (e.g., Pod UIDs, container IDs, primary keys) across built-in sorting, external search filtering, and live streaming insertions/deletions.
+- **Virtualized Vertical Cell Merging (`rowSpanBuilder`)**: Merges consecutive rows in grouping columns (`Namespace`, `Controller`, `QoS`, `Category`) in `O(1)` viewport time—keeping merged cells visible even when `startRow` scrolls off-screen while preserving row click, hover, and scroll physics.
 - **Single-Pass `CustomPaint` Crisp Grid**: Paints row backgrounds (zebra striping, hover, selection, focus ring) and `1px` vertical/horizontal grid lines in a single lightweight `CustomPainter` per visible row instead of allocating nested `BoxDecoration` trees per cell.
 - **Interactive Resizable Columns**: Drag any column header divider to resize within `minColumnWidth` / `maxColumnWidth`, or double-click a divider to reset the column to its initial width.
-- **Instant Sortable Columns**: Click headers to cycle `ascending -> descending -> unsorted`. Built-in natural sorting handles numbers, `DateTime`, `Duration`, booleans, and numeric strings (`'9.5 ms' < '12.0 ms' < '100.0 ms'`) using a cached Schwartzian index permutation that never re-sorts during scroll, hover, or resize frames.
+- **Customizable Sortable Headers**: Supports 3-state (`tristate`) or 2-state (`toggle`) sort cycles, per-column `initialSortDirection`, inline/trailing sort icon layout (`sortIconInline`, `showUnsortedSortIcon`, `activeHeaderTextStyle`), custom `sortIconBuilder`, and `headerBuilder`—backed by a cached Schwartzian index permutation (`'9.5 ms' < '12.0 ms' < '100.0 ms'`).
 - **Desktop-Grade Multi-Row Selection & Keyboard Navigation**: Supports `none`, `single`, and `multi` selection (`Click`, `Ctrl`/`Cmd`+`Click`, `Shift`+`Click` contiguous range, `Ctrl`/`Cmd`+`A`, optional checkbox column) plus full keyboard navigation (`ArrowUp`/`Down`, `Shift`+`ArrowUp`/`Down`, `PageUp`/`Down`, `Home`/`End`, `Space`, `Enter`, `Escape`) with table-level off-screen focus retention, `0ms` single-click response, and double-click activation.
 - **Bulletproof Layout Constraints**: Automatically adapts inside bounded (`Expanded`, `SizedBox`, split panes) and unbounded (`Column`, `SingleChildScrollView`, `Dialog`) parents—and even renders cleanly without a `MaterialApp` or `Scaffold` ancestor.
 
@@ -32,14 +33,15 @@ Flutter's built-in `DataTable` instantiates every cell eagerly in a single `Rend
 
 ## Comparison
 
-| Capability | Flutter `DataTable` | `dense_table` `1.1.0` |
+| Capability | Flutter `DataTable` | `dense_table` `1.2.0` |
 | :--- | :--- | :--- |
 | **External Dependencies** | Flutter SDK | **Zero (Flutter SDK only)** |
 | **100,000+ Row Virtualization** | Eager `O(N)` (freezes / OOM) | **`O(1)` fixed-extent + `.builder`** |
+| **Virtualized Vertical `RowSpan`** | Not supported | **`O(1)` viewport `rowSpanBuilder`** |
 | **Stable Row ID Anchoring** | Manual index bookkeeping | **`rowIdBuilder` across sort, filter & streams** |
 | **Sticky Header + 2D Scroll Sync** | Scrolls off-screen by default | **Built-in synced 2D scrollbars** |
 | **Interactive Column Resizing** | No | **Drag divider + double-click reset** |
-| **Built-in Natural Sorting** | Manual external wiring | **Cached `O(N log N)` index sort** |
+| **Built-in Natural Sorting** | Manual external wiring | **Cached `O(N log N)` (`tristate` & `toggle`)** |
 | **Multi-Select (`Shift` / `Cmd` / `Ctrl`)** | Basic row callback only | **Single, Multi, Range & `Cmd/Ctrl+A`** |
 | **Keyboard Navigation** | Minimal | **Arrows, PageUp/Down, Home/End, Enter** |
 | **Unbounded Parent (`Column`) Safety** | Manual scroll wrappers required | **Automatic constraint resolution** |
@@ -50,7 +52,7 @@ Flutter's built-in `DataTable` instantiates every cell eagerly in a single `Rend
 
 ```yaml
 dependencies:
-  dense_table: ^1.1.0
+  dense_table: ^1.2.0
 ```
 
 ---

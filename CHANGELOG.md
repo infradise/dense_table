@@ -1,3 +1,9 @@
+## 1.2.0
+
+* **Virtualized Vertical Cell Merging (`rowSpanBuilder` & `DenseRowSpan`)**: Added `rowSpanBuilder` (`DenseRowSpanResolver`) and `DenseRowSpan` (`startRow`, `rowSpan`, `backgroundColor`, `stickyViewportAlignment`) to `DenseTable` and `DenseTable.builder`, rendering vertically merged cells in `O(1)` viewport time across 100,000+ rows while keeping labels visible when `startRow` scrolls above the viewport and preserving row click/hover pass-through.
+* **Header & Sort Cycle Customization**: Added `DenseSortCycle` (`tristate` vs 2-state `toggle`), `DenseColumn.initialSortDirection`, `DenseColumn.headerKey`, `DenseColumn.headerBuilder`, and `DenseTable.sortIconBuilder`.
+* **Header Sort Indicator Styling (`DenseStyle`)**: Added `activeHeaderTextStyle`, `showUnsortedSortIcon`, and `sortIconInline` (with zero-dependency dual-chevron unsorted indicator painting) for compact inline sort headers.
+
 ## 1.1.0
 
 * **Stable Row Identity (`rowIdBuilder`)**: Added `rowIdBuilder` (`DenseRowIdGetter`), `dataIdentity`, and `onSelectedIdsChanged` to `DenseTable` and `DenseTable.builder` so selection, keyboard focus, and the `Shift`-range anchor track stable domain record IDs across external search filtering, pagination, and live streaming insertions/deletions.

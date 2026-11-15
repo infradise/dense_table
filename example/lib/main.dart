@@ -112,7 +112,7 @@ class _DenseTableDemoAppState extends State<DenseTableDemoApp> {
     final visibleCount = _filteredSourceIndices.length;
 
     return WidgetsApp(
-      title: 'DenseTable 1.1.0 Showcase',
+      title: 'DenseTable 1.2.0 Showcase',
       color: const Color(0xFF2563EB),
       debugShowCheckedModeBanner: false,
       pageRouteBuilder: <T>(RouteSettings settings, WidgetBuilder builder) {
@@ -142,7 +142,7 @@ class _DenseTableDemoAppState extends State<DenseTableDemoApp> {
                 alignment: WrapAlignment.spaceBetween,
                 children: <Widget>[
                   Text(
-                    'DenseTable 1.1.0 Showcase',
+                    'DenseTable 1.2.0 Showcase',
                     style: TextStyle(
                       color: fgColor,
                       fontSize: 15.0,

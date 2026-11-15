@@ -711,4 +711,211 @@ void main() {
       },
     );
   });
+
+  group(
+      'Header Customization, Toggle Sort Cycle & Virtualized RowSpan (v1.2.0)',
+      () {
+    testWidgets(
+      'supports DenseSortCycle.toggle, initialSortDirection, inline unsorted icons, activeHeaderTextStyle, and headerBuilder',
+      (tester) async {
+        final controller = DenseTableController();
+        final seenDirections = <DenseSortDirection?>[];
+
+        await tester.pumpWidget(
+          _wrapTestHarness(
+            SizedBox(
+              width: 640,
+              height: 260,
+              child: DenseTable(
+                controller: controller,
+                sortCycle: DenseSortCycle.toggle,
+                style: const DenseStyle(
+                  showUnsortedSortIcon: true,
+                  sortIconInline: true,
+                  activeHeaderTextStyle: TextStyle(
+                    color: Color(0xFF38BDF8),
+                    fontSize: 12.0,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                sortIconBuilder: (context, direction) {
+                  seenDirections.add(direction);
+                  final label = switch (direction) {
+                    null => 'SORT_IDLE',
+                    DenseSortDirection.ascending => 'SORT_ASC',
+                    DenseSortDirection.descending => 'SORT_DESC',
+                  };
+                  return Text(label);
+                },
+                headers: const <String>['Fav', 'Cluster', 'Modified'],
+                columns: <DenseColumn>[
+                  DenseColumn(
+                    title: 'Fav',
+                    initialWidth: 50,
+                    headerKey: const ValueKey<String>('hdr_fav'),
+                    headerBuilder: (context, col, idx, dir) {
+                      return Text(dir == null ? 'STAR' : 'STAR_${dir.name}');
+                    },
+                  ),
+                  const DenseColumn(
+                    title: 'Cluster',
+                    initialWidth: 200,
+                    headerKey: ValueKey<String>('hdr_cluster'),
+                  ),
+                  const DenseColumn(
+                    title: 'Modified',
+                    initialWidth: 160,
+                    initialSortDirection: DenseSortDirection.descending,
+                    headerKey: ValueKey<String>('hdr_modified'),
+                  ),
+                ],
+                data: const <List<dynamic>>[
+                  <dynamic>[1, 'alpha', 100],
+                  <dynamic>[0, 'bravo', 300],
+                  <dynamic>[1, 'charlie', 200],
+                ],
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        // Unsorted indicators rendered for Cluster & Modified; custom headerBuilder for Fav.
+        expect(find.text('STAR'), findsOneWidget);
+        expect(find.text('SORT_IDLE'), findsNWidgets(2));
+        expect(seenDirections, contains(null));
+
+        // Tap 'Modified' -> starts at initialSortDirection (descending) because configured!
+        await tester.tap(find.byKey(const ValueKey<String>('hdr_modified')));
+        await tester.pumpAndSettle();
+        expect(
+          controller.sortState,
+          const DenseSortState(
+            columnIndex: 2,
+            direction: DenseSortDirection.descending,
+          ),
+        );
+        expect(find.text('SORT_DESC'), findsOneWidget);
+        expect(
+          tester.getTopLeft(find.text('bravo')).dy,
+          lessThan(tester.getTopLeft(find.text('charlie')).dy),
+        );
+
+        // Second tap on 'Modified' with DenseSortCycle.toggle -> flips to ascending (never null!).
+        await tester.tap(find.byKey(const ValueKey<String>('hdr_modified')));
+        await tester.pumpAndSettle();
+        expect(
+          controller.sortState,
+          const DenseSortState(
+            columnIndex: 2,
+            direction: DenseSortDirection.ascending,
+          ),
+        );
+        expect(find.text('SORT_ASC'), findsOneWidget);
+
+        // Third tap on 'Modified' -> flips back to descending!
+        await tester.tap(find.byKey(const ValueKey<String>('hdr_modified')));
+        await tester.pumpAndSettle();
+        expect(
+          controller.sortState?.direction,
+          DenseSortDirection.descending,
+        );
+
+        // Tap 'Fav' -> triggers headerBuilder with active ascending direction!
+        await tester.tap(find.byKey(const ValueKey<String>('hdr_fav')));
+        await tester.pumpAndSettle();
+        expect(find.text('STAR_ascending'), findsOneWidget);
+
+        controller.dispose();
+      },
+    );
+
+    testWidgets(
+      'virtualizes multi-row RowSpan across 100,000 rows without losing merged labels off-screen',
+      (tester) async {
+        final controller = DenseTableController();
+        var mergedBuilds = 0;
+        int? tappedRow;
+
+        // Group every 50 consecutive rows into a merged Namespace span (2,000 spans across 100,000 rows).
+        DenseRowSpan? resolveSpan(int visualRow, int col) {
+          if (col == 0) {
+            final groupStart = (visualRow ~/ 50) * 50;
+            return DenseRowSpan(
+              startRow: groupStart,
+              rowSpan: 50,
+              backgroundColor: const Color(0x1438BDF8),
+            );
+          }
+          return null;
+        }
+
+        await tester.pumpWidget(
+          _wrapTestHarness(
+            SizedBox(
+              width: 640,
+              height: 300,
+              child: DenseTable.builder(
+                controller: controller,
+                enableSorting: false,
+                rowSpanBuilder: resolveSpan,
+                onRowTap: (row) => tappedRow = row,
+                style: const DenseStyle(
+                  rowHeight: 30.0,
+                  showUnsortedSortIcon: true,
+                ),
+                rowCount: 100000,
+                columns: const <DenseColumn>[
+                  DenseColumn(
+                    title: 'Namespace',
+                    initialWidth: 180,
+                    alignment: Alignment.center,
+                  ),
+                  DenseColumn(title: 'Pod', initialWidth: 260),
+                ],
+                cellBuilder: (context, row, col) {
+                  if (col == 0) {
+                    mergedBuilds++;
+                    return Text('ns-${row ~/ 50}');
+                  }
+                  return Text('pod-$row');
+                },
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        // Only 1 merged cell ('ns-0') is mounted for rows 0..49 in a 300px viewport!
+        expect(find.text('ns-0'), findsOneWidget);
+        expect(mergedBuilds, lessThan(5));
+
+        // Scroll to row 25 (middle of the 0..49 span, so startRow 0 is 750px above viewport!).
+        // 'ns-0' MUST remain mounted and visible inside the viewport!
+        controller.scrollToVisualRow(25);
+        await tester.pumpAndSettle();
+        expect(find.text('pod-0'), findsNothing);
+        expect(find.text('pod-25'), findsOneWidget);
+        expect(find.text('ns-0'), findsOneWidget);
+
+        // Tapping a row still passes straight through to onRowTap!
+        await tester.tap(find.text('pod-26'));
+        await tester.pump();
+        expect(tappedRow, 26);
+
+        // Jump to row 99,990 (span 1999: rows 99,950..99,999).
+        controller.scrollToVisualRow(99990);
+        await tester.pumpAndSettle();
+        expect(find.text('ns-1999'), findsOneWidget);
+        expect(find.text('pod-99990'), findsOneWidget);
+
+        expect(
+          const DenseRowSpan(startRow: 0, rowSpan: 10),
+          equals(const DenseRowSpan(startRow: 0, rowSpan: 10)),
+        );
+
+        controller.dispose();
+      },
+    );
+  });
 }

@@ -56,6 +56,9 @@ class DenseTable extends StatefulWidget {
     this.selectionMode = DenseSelectionMode.none,
     this.showCheckboxColumn = false,
     this.enableSorting = true,
+    this.sortCycle = DenseSortCycle.tristate,
+    this.sortIconBuilder,
+    this.rowSpanBuilder,
     this.enableColumnResize = true,
     this.enableKeyboardNavigation = true,
     this.autofocus = false,
@@ -103,6 +106,9 @@ class DenseTable extends StatefulWidget {
     this.selectionMode = DenseSelectionMode.none,
     this.showCheckboxColumn = false,
     this.enableSorting = true,
+    this.sortCycle = DenseSortCycle.tristate,
+    this.sortIconBuilder,
+    this.rowSpanBuilder,
     this.enableColumnResize = true,
     this.enableKeyboardNavigation = true,
     this.autofocus = false,
@@ -179,6 +185,16 @@ class DenseTable extends StatefulWidget {
 
   /// Whether clicking sortable column headers toggles column sorting.
   final bool enableSorting;
+
+  /// Sort state cycle applied when clicking a sortable column header.
+  final DenseSortCycle sortCycle;
+
+  /// Optional builder for custom sort indicator widgets (`null` = unsorted).
+  final DenseSortIconBuilder? sortIconBuilder;
+
+  /// Optional resolver for vertically merged cells (`RowSpan`) across
+  /// consecutive visual rows.
+  final DenseRowSpanResolver? rowSpanBuilder;
 
   /// Whether dragging column header borders resizes columns interactively.
   final bool enableColumnResize;
@@ -827,10 +843,15 @@ class _DenseTableState extends State<DenseTable> {
   }
 
   void _onHeaderSortTap(int columnIndex) {
-    if (!widget.enableSorting || !_resolvedColumns[columnIndex].sortable) {
+    final col = _resolvedColumns[columnIndex];
+    if (!widget.enableSorting || !col.sortable) {
       return;
     }
-    _controller.toggleSortColumn(columnIndex);
+    _controller.toggleSortColumn(
+      columnIndex,
+      cycle: widget.sortCycle,
+      initialDirection: col.initialSortDirection,
+    );
   }
 
   void _handleRowPointerTap(int visualIndex, {required bool fromCheckbox}) {
@@ -1149,7 +1170,9 @@ class _DenseTableState extends State<DenseTable> {
       checkboxW + effectiveDataW + actionsW,
     );
 
-    // Precompute vertical divider X coordinates once per layout pass.
+    // Precompute column X offsets and vertical divider X coordinates once per
+    // layout pass.
+    final columnOffsets = List<double>.filled(colCount, 0.0);
     final dividerCount =
         (_showCheckboxes ? 1 : 0) + colCount + (_hasActionsColumn ? 1 : 0);
     final dividerOffsets = List<double>.filled(dividerCount, 0.0);
@@ -1160,6 +1183,7 @@ class _DenseTableState extends State<DenseTable> {
       dividerOffsets[dIdx++] = cursor;
     }
     for (var i = 0; i < colCount; i++) {
+      columnOffsets[i] = cursor;
       cursor += effectiveWidths[i];
       dividerOffsets[dIdx++] = cursor;
     }
@@ -1171,6 +1195,7 @@ class _DenseTableState extends State<DenseTable> {
     return _EffectiveColumnLayout(
       checkboxWidth: checkboxW,
       actionsWidth: actionsW,
+      columnOffsets: columnOffsets,
       columnWidths: effectiveWidths,
       dividerOffsets: dividerOffsets,
       totalWidth: totalTableW,
@@ -1413,32 +1438,64 @@ class _DenseTableState extends State<DenseTable> {
     final canSort = widget.enableSorting && col.sortable;
     final canResize = widget.enableColumnResize && col.resizable;
 
-    var labelContent = col.headerChild ??
-        Text(
-          col.title,
-          style: style.headerTextStyle,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        );
+    Widget labelContent;
+    if (col.headerBuilder != null) {
+      labelContent = col.headerBuilder!(
+        context,
+        col,
+        columnIndex,
+        sortDirection,
+      );
+    } else {
+      final effectiveHeaderStyle =
+          (sortDirection != null ? style.activeHeaderTextStyle : null) ??
+              style.headerTextStyle;
 
-    if (sortDirection != null) {
-      labelContent = Row(
-        mainAxisSize: MainAxisSize.max,
-        children: <Widget>[
-          Flexible(child: labelContent),
-          const SizedBox(width: 4.0),
-          CustomPaint(
+      labelContent = col.headerChild ??
+          Text(
+            col.title,
+            style: effectiveHeaderStyle,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          );
+
+      final showIndicator =
+          canSort && (sortDirection != null || style.showUnsortedSortIcon);
+      if (showIndicator) {
+        final Widget indicatorWidget;
+        if (widget.sortIconBuilder != null) {
+          indicatorWidget = widget.sortIconBuilder!(context, sortDirection);
+        } else if (sortDirection != null) {
+          indicatorWidget = CustomPaint(
             size: const Size(8.0, 8.0),
             painter: _DenseSortArrowPainter(
               direction: sortDirection,
               color: style.activeSortIconColor,
             ),
-          ),
-        ],
-      );
+          );
+        } else {
+          indicatorWidget = CustomPaint(
+            size: const Size(8.0, 10.0),
+            painter: _DenseUnsortedIconPainter(
+              color: style.sortIconColor,
+            ),
+          );
+        }
+
+        labelContent = Row(
+          mainAxisSize:
+              style.sortIconInline ? MainAxisSize.min : MainAxisSize.max,
+          children: <Widget>[
+            Flexible(child: labelContent),
+            SizedBox(width: style.sortIconInline ? 3.0 : 4.0),
+            indicatorWidget,
+          ],
+        );
+      }
     }
 
     Widget interactiveLabel = Container(
+      key: canSort ? null : col.headerKey,
       padding: style.cellPadding,
       alignment: col.alignment,
       child: labelContent,
@@ -1448,6 +1505,7 @@ class _DenseTableState extends State<DenseTable> {
       interactiveLabel = MouseRegion(
         cursor: SystemMouseCursors.click,
         child: GestureDetector(
+          key: col.headerKey,
           behavior: HitTestBehavior.opaque,
           onTap: () => _onHeaderSortTap(columnIndex),
           child: interactiveLabel,
@@ -1571,25 +1629,189 @@ class _DenseTableState extends State<DenseTable> {
             child: SizedBox(
               width: layout.totalWidth,
               height: bodyHeight,
-              child: ListView.builder(
-                controller: _verticalController,
-                itemCount: rowCount,
-                itemExtent: style.rowHeight,
-                physics: widget.shrinkWrap &&
-                        rowCount * style.rowHeight <= bodyHeight + 0.5
-                    ? const NeverScrollableScrollPhysics()
-                    : const ClampingScrollPhysics(),
-                itemBuilder: (context, visualIndex) => _buildVirtualRow(
-                  context: context,
-                  visualIndex: visualIndex,
-                  layout: layout,
-                  rowListenable: rowListenable,
-                ),
+              child: _buildBodyScrollSurface(
+                rowCount: rowCount,
+                bodyHeight: bodyHeight,
+                layout: layout,
+                rowListenable: rowListenable,
               ),
             ),
           ),
         ),
       ),
+    );
+  }
+
+  static bool _isSpanOverlaid(DenseRowSpan? span) =>
+      span != null && (span.rowSpan > 1 || span.backgroundColor != null);
+
+  Widget _buildBodyScrollSurface({
+    required int rowCount,
+    required double bodyHeight,
+    required _EffectiveColumnLayout layout,
+    required Listenable rowListenable,
+  }) {
+    final style = widget.style;
+    final listView = ListView.builder(
+      controller: _verticalController,
+      itemCount: rowCount,
+      itemExtent: style.rowHeight,
+      physics:
+          widget.shrinkWrap && rowCount * style.rowHeight <= bodyHeight + 0.5
+              ? const NeverScrollableScrollPhysics()
+              : const ClampingScrollPhysics(),
+      itemBuilder: (context, visualIndex) => _buildVirtualRow(
+        context: context,
+        visualIndex: visualIndex,
+        layout: layout,
+        rowListenable: rowListenable,
+      ),
+    );
+
+    if (widget.rowSpanBuilder == null) {
+      return listView;
+    }
+
+    final overlayListenable = Listenable.merge(<Listenable>[
+      _verticalController,
+      _controller,
+    ]);
+
+    return ClipRect(
+      child: Stack(
+        fit: StackFit.expand,
+        children: <Widget>[
+          listView,
+          IgnorePointer(
+            child: AnimatedBuilder(
+              animation: overlayListenable,
+              builder: (context, _) => _buildMergedCellsOverlay(
+                context: context,
+                rowCount: rowCount,
+                bodyHeight: bodyHeight,
+                layout: layout,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMergedCellsOverlay({
+    required BuildContext context,
+    required int rowCount,
+    required double bodyHeight,
+    required _EffectiveColumnLayout layout,
+  }) {
+    final spanResolver = widget.rowSpanBuilder;
+    if (spanResolver == null || rowCount <= 0 || bodyHeight <= 0) {
+      return const SizedBox.shrink();
+    }
+
+    final style = widget.style;
+    final rowH = style.rowHeight;
+    final scrollOffset = _verticalController.hasClients
+        ? math.max(0.0, _verticalController.offset)
+        : 0.0;
+
+    final firstRow = (scrollOffset / rowH).floor().clamp(0, rowCount - 1);
+    final lastRow =
+        ((scrollOffset + bodyHeight) / rowH).ceil().clamp(0, rowCount - 1);
+    final colCount = _resolvedColumns.length;
+    final mergedWidgets = <Widget>[];
+
+    for (var colIdx = 0; colIdx < colCount; colIdx++) {
+      final colLeft = layout.columnOffsets[colIdx];
+      final colW = layout.columnWidths[colIdx];
+      final col = _resolvedColumns[colIdx];
+      final hasRightDivider = style.showVerticalGridLines &&
+          (colIdx < colCount - 1 ||
+              _hasActionsColumn ||
+              (colLeft + colW < layout.totalWidth - 0.5));
+
+      var vRow = firstRow;
+      while (vRow <= lastRow) {
+        final span = spanResolver(vRow, colIdx);
+        if (!_isSpanOverlaid(span)) {
+          vRow++;
+          continue;
+        }
+
+        final startRow = span!.startRow.clamp(0, rowCount - 1);
+        final endExcl = span.endRowExclusive.clamp(startRow + 1, rowCount);
+        final effectiveRows = endExcl - startRow;
+        final boxTop = startRow * rowH - scrollOffset;
+        final boxHeight = effectiveRows * rowH;
+        final startOriginal = _visualToOriginalIndex(startRow);
+
+        var innerTop = 0.0;
+        var innerHeight = boxHeight;
+        if (span.stickyViewportAlignment && boxHeight > rowH) {
+          final visTop = math.max(0.0, boxTop);
+          final visBottom = math.min(bodyHeight, boxTop + boxHeight);
+          innerHeight = math.min(
+            boxHeight,
+            math.max(rowH, visBottom - visTop),
+          );
+          innerTop = (visTop - boxTop).clamp(0.0, boxHeight - innerHeight);
+        }
+
+        final cellChild = Padding(
+          padding: style.cellPadding,
+          child: Align(
+            alignment: col.alignment,
+            child: _buildCellContent(
+              context: context,
+              originalRowIndex: startOriginal,
+              columnIndex: colIdx,
+              textStyle: style.cellTextStyle,
+            ),
+          ),
+        );
+
+        mergedWidgets.add(
+          Positioned(
+            key: ValueKey<int>(startRow * colCount + colIdx),
+            left: colLeft,
+            top: boxTop,
+            width: colW,
+            height: boxHeight,
+            child: CustomPaint(
+              painter: _DenseMergedCellPainter(
+                backgroundColor: span.backgroundColor ?? style.backgroundColor,
+                gridColor: style.gridColor,
+                drawRightBorder: hasRightDivider,
+                drawBottomBorder: style.showHorizontalGridLines,
+              ),
+              child: innerTop == 0.0 && innerHeight == boxHeight
+                  ? cellChild
+                  : Stack(
+                      fit: StackFit.expand,
+                      children: <Widget>[
+                        Positioned(
+                          left: 0.0,
+                          right: 0.0,
+                          top: innerTop,
+                          height: innerHeight,
+                          child: cellChild,
+                        ),
+                      ],
+                    ),
+            ),
+          ),
+        );
+
+        vRow = math.max(vRow + 1, endExcl);
+      }
+    }
+
+    if (mergedWidgets.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    return Stack(
+      clipBehavior: Clip.none,
+      children: mergedWidgets,
     );
   }
 
@@ -1640,12 +1862,29 @@ class _DenseTableState extends State<DenseTable> {
                 ? (style.selectedCellTextStyle ?? style.cellTextStyle)
                 : style.cellTextStyle;
 
+            final spanResolver = widget.rowSpanBuilder;
+            List<bool>? overlaidCols;
+            if (spanResolver != null) {
+              final colCount = _resolvedColumns.length;
+              for (var c = 0; c < colCount; c++) {
+                if (_isSpanOverlaid(spanResolver(visualIndex, c))) {
+                  overlaidCols ??= List<bool>.filled(colCount, false);
+                  overlaidCols[c] = true;
+                }
+              }
+            }
+
             return CustomPaint(
               painter: _DenseRowGridPainter(
+                baseBackgroundColor: style.backgroundColor,
                 backgroundColor: bgColor,
                 gridColor: style.gridColor,
                 focusBorderColor:
                     isFocused ? style.focusedRowBorderColor : null,
+                checkboxWidth: layout.checkboxWidth,
+                columnOffsets: layout.columnOffsets,
+                columnWidths: layout.columnWidths,
+                overlaidColumns: overlaidCols,
                 dividerOffsets: layout.dividerOffsets,
                 showVerticalLines: style.showVerticalGridLines,
                 showHorizontalLines: style.showHorizontalGridLines,
@@ -1676,22 +1915,28 @@ class _DenseTableState extends State<DenseTable> {
                     for (var colIdx = 0;
                         colIdx < _resolvedColumns.length;
                         colIdx++)
-                      SizedBox(
-                        width: layout.columnWidths[colIdx],
-                        height: style.rowHeight,
-                        child: Padding(
-                          padding: style.cellPadding,
-                          child: Align(
-                            alignment: _resolvedColumns[colIdx].alignment,
-                            child: _buildCellContent(
-                              context: context,
-                              originalRowIndex: originalIndex,
-                              columnIndex: colIdx,
-                              textStyle: effectiveTextStyle,
+                      if (overlaidCols != null && overlaidCols[colIdx])
+                        SizedBox(
+                          width: layout.columnWidths[colIdx],
+                          height: style.rowHeight,
+                        )
+                      else
+                        SizedBox(
+                          width: layout.columnWidths[colIdx],
+                          height: style.rowHeight,
+                          child: Padding(
+                            padding: style.cellPadding,
+                            child: Align(
+                              alignment: _resolvedColumns[colIdx].alignment,
+                              child: _buildCellContent(
+                                context: context,
+                                originalRowIndex: originalIndex,
+                                columnIndex: colIdx,
+                                textStyle: effectiveTextStyle,
+                              ),
                             ),
                           ),
                         ),
-                      ),
                     if (_hasActionsColumn)
                       SizedBox(
                         width: layout.actionsWidth,
@@ -1759,6 +2004,7 @@ class _EffectiveColumnLayout {
   const _EffectiveColumnLayout({
     required this.checkboxWidth,
     required this.actionsWidth,
+    required this.columnOffsets,
     required this.columnWidths,
     required this.dividerOffsets,
     required this.totalWidth,
@@ -1766,6 +2012,7 @@ class _EffectiveColumnLayout {
 
   final double checkboxWidth;
   final double actionsWidth;
+  final List<double> columnOffsets;
   final List<double> columnWidths;
   final List<double> dividerOffsets;
   final double totalWidth;
@@ -1811,30 +2058,101 @@ class _DenseHeaderGridPainter extends CustomPainter {
 
 class _DenseRowGridPainter extends CustomPainter {
   const _DenseRowGridPainter({
+    required this.baseBackgroundColor,
     required this.backgroundColor,
     required this.gridColor,
     required this.focusBorderColor,
+    required this.checkboxWidth,
+    required this.columnOffsets,
+    required this.columnWidths,
+    required this.overlaidColumns,
     required this.dividerOffsets,
     required this.showVerticalLines,
     required this.showHorizontalLines,
   });
 
+  final Color baseBackgroundColor;
   final Color backgroundColor;
   final Color gridColor;
   final Color? focusBorderColor;
+  final double checkboxWidth;
+  final List<double> columnOffsets;
+  final List<double> columnWidths;
+  final List<bool>? overlaidColumns;
   final List<double> dividerOffsets;
   final bool showVerticalLines;
   final bool showHorizontalLines;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final fillPaint = Paint()..color = backgroundColor;
-    canvas.drawRect(Offset.zero & size, fillPaint);
+    final overlaid = overlaidColumns;
+    if (overlaid == null) {
+      final fillPaint = Paint()..color = backgroundColor;
+      canvas.drawRect(Offset.zero & size, fillPaint);
 
-    if (showVerticalLines || showHorizontalLines) {
+      if (showVerticalLines || showHorizontalLines) {
+        final gridPaint = Paint()
+          ..color = gridColor
+          ..strokeWidth = 1.0;
+
+        if (showVerticalLines) {
+          for (var i = 0; i < dividerOffsets.length; i++) {
+            final x = dividerOffsets[i] - 0.5;
+            if (x > 0 && x <= size.width) {
+              canvas.drawLine(Offset(x, 0), Offset(x, size.height), gridPaint);
+            }
+          }
+        }
+
+        if (showHorizontalLines) {
+          final y = size.height - 0.5;
+          canvas.drawLine(Offset(0, y), Offset(size.width, y), gridPaint);
+        }
+      }
+    } else {
+      final basePaint = Paint()..color = baseBackgroundColor;
+      canvas.drawRect(Offset.zero & size, basePaint);
+
+      final rowPaint = Paint()..color = backgroundColor;
       final gridPaint = Paint()
         ..color = gridColor
         ..strokeWidth = 1.0;
+      final bottomY = size.height - 0.5;
+
+      void paintUnmergedSegment(double startX, double endX) {
+        if (endX <= startX) {
+          return;
+        }
+        if (backgroundColor != baseBackgroundColor) {
+          canvas.drawRect(
+            Rect.fromLTRB(startX, 0.0, endX, size.height),
+            rowPaint,
+          );
+        }
+        if (showHorizontalLines) {
+          canvas.drawLine(
+            Offset(startX, bottomY),
+            Offset(endX, bottomY),
+            gridPaint,
+          );
+        }
+      }
+
+      if (checkboxWidth > 0) {
+        paintUnmergedSegment(0.0, checkboxWidth);
+      }
+      var lastDataEnd = checkboxWidth;
+      for (var c = 0; c < columnWidths.length; c++) {
+        final colStart = columnOffsets[c];
+        final colEnd = colStart + columnWidths[c];
+        lastDataEnd = colEnd;
+        if (!overlaid[c]) {
+          paintUnmergedSegment(colStart, colEnd);
+        }
+      }
+      if (size.width > lastDataEnd) {
+        paintUnmergedSegment(lastDataEnd, size.width);
+      }
 
       if (showVerticalLines) {
         for (var i = 0; i < dividerOffsets.length; i++) {
@@ -1843,11 +2161,6 @@ class _DenseRowGridPainter extends CustomPainter {
             canvas.drawLine(Offset(x, 0), Offset(x, size.height), gridPaint);
           }
         }
-      }
-
-      if (showHorizontalLines) {
-        final y = size.height - 0.5;
-        canvas.drawLine(Offset(0, y), Offset(size.width, y), gridPaint);
       }
     }
 
@@ -1866,12 +2179,88 @@ class _DenseRowGridPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _DenseRowGridPainter oldDelegate) =>
+      oldDelegate.baseBackgroundColor != baseBackgroundColor ||
       oldDelegate.backgroundColor != backgroundColor ||
       oldDelegate.gridColor != gridColor ||
       oldDelegate.focusBorderColor != focusBorderColor ||
+      oldDelegate.checkboxWidth != checkboxWidth ||
       oldDelegate.showVerticalLines != showVerticalLines ||
       oldDelegate.showHorizontalLines != showHorizontalLines ||
+      !_boolListEquals(oldDelegate.overlaidColumns, overlaidColumns) ||
+      !_doubleListEquals(oldDelegate.columnOffsets, columnOffsets) ||
+      !_doubleListEquals(oldDelegate.columnWidths, columnWidths) ||
       !_doubleListEquals(oldDelegate.dividerOffsets, dividerOffsets);
+}
+
+class _DenseMergedCellPainter extends CustomPainter {
+  const _DenseMergedCellPainter({
+    required this.backgroundColor,
+    required this.gridColor,
+    required this.drawRightBorder,
+    required this.drawBottomBorder,
+  });
+
+  final Color backgroundColor;
+  final Color gridColor;
+  final bool drawRightBorder;
+  final bool drawBottomBorder;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final fillPaint = Paint()..color = backgroundColor;
+    canvas.drawRect(Offset.zero & size, fillPaint);
+
+    if (drawRightBorder || drawBottomBorder) {
+      final borderPaint = Paint()
+        ..color = gridColor
+        ..strokeWidth = 1.0;
+      if (drawRightBorder && size.width >= 1.0) {
+        final rx = size.width - 0.5;
+        canvas.drawLine(Offset(rx, 0.0), Offset(rx, size.height), borderPaint);
+      }
+      if (drawBottomBorder && size.height >= 1.0) {
+        final by = size.height - 0.5;
+        canvas.drawLine(Offset(0.0, by), Offset(size.width, by), borderPaint);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _DenseMergedCellPainter oldDelegate) =>
+      oldDelegate.backgroundColor != backgroundColor ||
+      oldDelegate.gridColor != gridColor ||
+      oldDelegate.drawRightBorder != drawRightBorder ||
+      oldDelegate.drawBottomBorder != drawBottomBorder;
+}
+
+class _DenseUnsortedIconPainter extends CustomPainter {
+  const _DenseUnsortedIconPainter({required this.color});
+
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.3
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..isAntiAlias = true;
+
+    final path = Path()
+      ..moveTo(size.width * 0.2, size.height * 0.36)
+      ..lineTo(size.width * 0.5, size.height * 0.12)
+      ..lineTo(size.width * 0.8, size.height * 0.36)
+      ..moveTo(size.width * 0.2, size.height * 0.64)
+      ..lineTo(size.width * 0.5, size.height * 0.88)
+      ..lineTo(size.width * 0.8, size.height * 0.64);
+    canvas.drawPath(path, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _DenseUnsortedIconPainter oldDelegate) =>
+      oldDelegate.color != color;
 }
 
 class _DenseSortArrowPainter extends CustomPainter {
@@ -1999,6 +2388,21 @@ class _DenseCheckboxPainter extends CustomPainter {
       oldDelegate.activeColor != activeColor ||
       oldDelegate.checkColor != checkColor ||
       oldDelegate.borderColor != borderColor;
+}
+
+bool _boolListEquals(List<bool>? a, List<bool>? b) {
+  if (identical(a, b)) {
+    return true;
+  }
+  if (a == null || b == null || a.length != b.length) {
+    return false;
+  }
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) {
+      return false;
+    }
+  }
+  return true;
 }
 
 bool _doubleListEquals(List<double> a, List<double> b) {

@@ -47,6 +47,9 @@ class DenseStyle {
       fontSize: 13.0,
       fontWeight: FontWeight.w600,
     ),
+    this.activeHeaderTextStyle,
+    this.showUnsortedSortIcon = false,
+    this.sortIconInline = false,
   })  : assert(rowHeight > 0, 'rowHeight must be strictly positive.'),
         assert(headerHeight > 0, 'headerHeight must be strictly positive.'),
         assert(minColumnWidth >= 16.0, 'minColumnWidth must be >= 16.0.'),
@@ -95,6 +98,9 @@ class DenseStyle {
       fontSize: 13.0,
       fontWeight: FontWeight.w600,
     ),
+    this.activeHeaderTextStyle,
+    this.showUnsortedSortIcon = false,
+    this.sortIconInline = false,
   })  : assert(rowHeight > 0, 'rowHeight must be strictly positive.'),
         assert(headerHeight > 0, 'headerHeight must be strictly positive.'),
         assert(minColumnWidth >= 16.0, 'minColumnWidth must be >= 16.0.'),
@@ -143,6 +149,9 @@ class DenseStyle {
       fontSize: 13.0,
       fontWeight: FontWeight.w600,
     ),
+    this.activeHeaderTextStyle,
+    this.showUnsortedSortIcon = false,
+    this.sortIconInline = false,
   })  : assert(rowHeight > 0, 'rowHeight must be strictly positive.'),
         assert(headerHeight > 0, 'headerHeight must be strictly positive.'),
         assert(minColumnWidth >= 16.0, 'minColumnWidth must be >= 16.0.'),
@@ -244,6 +253,18 @@ class DenseStyle {
   /// Default text style for column header titles.
   final TextStyle headerTextStyle;
 
+  /// Optional override text style applied to a sortable column header title
+  /// when that column is actively sorted (`sortDirection != null`).
+  final TextStyle? activeHeaderTextStyle;
+
+  /// Whether sortable columns display a subtle dual-direction indicator even
+  /// when currently unsorted (`sortDirection == null`).
+  final bool showUnsortedSortIcon;
+
+  /// Whether the sort indicator sits immediately inline next to the header
+  /// title (`3px` gap) instead of expanding toward the column's trailing edge.
+  final bool sortIconInline;
+
   /// Returns a copy of this [DenseStyle] with the specified fields replaced.
   DenseStyle copyWith({
     double? rowHeight,
@@ -277,6 +298,9 @@ class DenseStyle {
     TextStyle? cellTextStyle,
     TextStyle? selectedCellTextStyle,
     TextStyle? headerTextStyle,
+    TextStyle? activeHeaderTextStyle,
+    bool? showUnsortedSortIcon,
+    bool? sortIconInline,
   }) {
     return DenseStyle(
       rowHeight: rowHeight ?? this.rowHeight,
@@ -318,6 +342,10 @@ class DenseStyle {
       selectedCellTextStyle:
           selectedCellTextStyle ?? this.selectedCellTextStyle,
       headerTextStyle: headerTextStyle ?? this.headerTextStyle,
+      activeHeaderTextStyle:
+          activeHeaderTextStyle ?? this.activeHeaderTextStyle,
+      showUnsortedSortIcon: showUnsortedSortIcon ?? this.showUnsortedSortIcon,
+      sortIconInline: sortIconInline ?? this.sortIconInline,
     );
   }
 
@@ -357,7 +385,10 @@ class DenseStyle {
         other.cellPadding == cellPadding &&
         other.cellTextStyle == cellTextStyle &&
         other.selectedCellTextStyle == selectedCellTextStyle &&
-        other.headerTextStyle == headerTextStyle;
+        other.headerTextStyle == headerTextStyle &&
+        other.activeHeaderTextStyle == activeHeaderTextStyle &&
+        other.showUnsortedSortIcon == showUnsortedSortIcon &&
+        other.sortIconInline == sortIconInline;
   }
 
   @override
@@ -393,5 +424,8 @@ class DenseStyle {
         cellTextStyle,
         selectedCellTextStyle,
         headerTextStyle,
+        activeHeaderTextStyle,
+        showUnsortedSortIcon,
+        sortIconInline,
       ]);
 }

@@ -21,20 +21,22 @@ Flutter's built-in `DataTable` instantiates every cell eagerly in a single `Rend
 `dense_table` solves both problems with **zero external hosted dependencies** (`dependencies` contains **only** the Flutter SDK):
 
 - **True `O(1)` Fixed-Extent Virtualization (`100,000+` Rows)**: Built on fixed-extent viewport math (`rowHeight`) and lazy `DenseTable.builder` cell construction so only the ~25–50 visible rows are mounted, and scrollbar thumb drags to row `99,999` resolve in `O(1)` arithmetic.
+- **Stable Row Identity (`rowIdBuilder`)**: Anchors multi-row selection, keyboard focus, and `Shift`-range extension to stable domain record IDs (e.g., Pod UIDs, container IDs, primary keys) across built-in sorting, external search filtering, and live streaming insertions/deletions.
 - **Single-Pass `CustomPaint` Crisp Grid**: Paints row backgrounds (zebra striping, hover, selection, focus ring) and `1px` vertical/horizontal grid lines in a single lightweight `CustomPainter` per visible row instead of allocating nested `BoxDecoration` trees per cell.
 - **Interactive Resizable Columns**: Drag any column header divider to resize within `minColumnWidth` / `maxColumnWidth`, or double-click a divider to reset the column to its initial width.
 - **Instant Sortable Columns**: Click headers to cycle `ascending -> descending -> unsorted`. Built-in natural sorting handles numbers, `DateTime`, `Duration`, booleans, and numeric strings (`'9.5 ms' < '12.0 ms' < '100.0 ms'`) using a cached Schwartzian index permutation that never re-sorts during scroll, hover, or resize frames.
-- **Desktop-Grade Multi-Row Selection & Keyboard Navigation**: Supports `none`, `single`, and `multi` selection (`Click`, `Ctrl`/`Cmd`+`Click`, `Shift`+`Click` contiguous range, `Ctrl`/`Cmd`+`A`, optional checkbox column) plus full keyboard navigation (`ArrowUp`/`Down`, `Shift`+`ArrowUp`/`Down`, `PageUp`/`Down`, `Home`/`End`, `Space`, `Enter`, `Escape`) with `0ms` single-click response and double-click activation.
+- **Desktop-Grade Multi-Row Selection & Keyboard Navigation**: Supports `none`, `single`, and `multi` selection (`Click`, `Ctrl`/`Cmd`+`Click`, `Shift`+`Click` contiguous range, `Ctrl`/`Cmd`+`A`, optional checkbox column) plus full keyboard navigation (`ArrowUp`/`Down`, `Shift`+`ArrowUp`/`Down`, `PageUp`/`Down`, `Home`/`End`, `Space`, `Enter`, `Escape`) with table-level off-screen focus retention, `0ms` single-click response, and double-click activation.
 - **Bulletproof Layout Constraints**: Automatically adapts inside bounded (`Expanded`, `SizedBox`, split panes) and unbounded (`Column`, `SingleChildScrollView`, `Dialog`) parents—and even renders cleanly without a `MaterialApp` or `Scaffold` ancestor.
 
 ---
 
 ## Comparison
 
-| Capability | Flutter `DataTable` | `dense_table` `1.0.0` |
+| Capability | Flutter `DataTable` | `dense_table` `1.1.0` |
 | :--- | :--- | :--- |
 | **External Dependencies** | Flutter SDK | **Zero (Flutter SDK only)** |
 | **100,000+ Row Virtualization** | Eager `O(N)` (freezes / OOM) | **`O(1)` fixed-extent + `.builder`** |
+| **Stable Row ID Anchoring** | Manual index bookkeeping | **`rowIdBuilder` across sort, filter & streams** |
 | **Sticky Header + 2D Scroll Sync** | Scrolls off-screen by default | **Built-in synced 2D scrollbars** |
 | **Interactive Column Resizing** | No | **Drag divider + double-click reset** |
 | **Built-in Natural Sorting** | Manual external wiring | **Cached `O(N log N)` index sort** |
@@ -48,7 +50,7 @@ Flutter's built-in `DataTable` instantiates every cell eagerly in a single `Rend
 
 ```yaml
 dependencies:
-  dense_table: ^1.0.0
+  dense_table: ^1.1.0
 ```
 
 ---
@@ -66,6 +68,7 @@ Widget buildProcessTable() {
     selectionMode: DenseSelectionMode.multi,
     showCheckboxColumn: true,
     headers: const ['ID', 'File', 'Latency', 'Status'],
+    rowIdBuilder: (rowIndex) => rowIndex + 1,
     columnWidths: const {
       0: 64.0,
       1: 220.0,
@@ -85,9 +88,9 @@ Widget buildProcessTable() {
 }
 ```
 
-### 2. Lazy 100,000+ Row Virtualization (`DenseTable.builder`)
+### 2. Lazy 100,000+ Row Virtualization & Stable Row IDs (`DenseTable.builder`)
 
-Use `DenseTable.builder` with `DenseTableController` to render 100,000+ domain objects without allocating intermediate row lists:
+Use `DenseTable.builder` with `rowIdBuilder` and `DenseTableController` to render 100,000+ domain objects—keeping selection, focus, and `Shift`-range anchors bound to exact records across sorting, filtering, and live stream updates:
 
 ```dart
 import 'package:dense_table/dense_table.dart';
@@ -109,9 +112,11 @@ class _LargeClusterGridState extends State<LargeClusterGrid> {
     super.dispose();
   }
 
+  String _podUid(int row) => 'pod-uid-${row.toString().padLeft(6, '0')}';
+
   Object _rawCell(int row, int col) => switch (col) {
         0 => row,
-        1 => 'pod-node-${row.toString().padLeft(6, '0')}',
+        1 => _podUid(row),
         2 => (row * 13) % 500,
         _ => 'Running',
       };
@@ -124,6 +129,7 @@ class _LargeClusterGridState extends State<LargeClusterGrid> {
       selectionMode: DenseSelectionMode.multi,
       showCheckboxColumn: true,
       rowCount: 100000,
+      rowIdBuilder: _podUid,
       rawCellValue: _rawCell,
       columns: const [
         DenseColumn(
@@ -132,7 +138,7 @@ class _LargeClusterGridState extends State<LargeClusterGrid> {
           alignment: Alignment.centerRight,
         ),
         DenseColumn(
-          title: 'Pod Name',
+          title: 'Pod UID',
           initialWidth: 240.0,
           flex: 1.0,
         ),
@@ -154,11 +160,11 @@ class _LargeClusterGridState extends State<LargeClusterGrid> {
           overflow: TextOverflow.ellipsis,
         );
       },
-      onSelectionChanged: (selectedRows) {
-        debugPrint('Selected count: ${selectedRows.length}');
+      onSelectedIdsChanged: (selectedIds) {
+        debugPrint('Selected Pod UIDs: ${selectedIds.length}');
       },
       onRowActivated: (rowIndex) {
-        debugPrint('Activated original row #$rowIndex');
+        debugPrint('Activated Pod ${_podUid(rowIndex)}');
       },
     );
   }
@@ -171,12 +177,12 @@ class _LargeClusterGridState extends State<LargeClusterGrid> {
 
 | Input | Behavior |
 | :--- | :--- |
-| **Click Row** | Selects row immediately (`0ms` delay) and sets range anchor |
+| **Click Row** | Selects row immediately (`0ms` delay) and anchors `rowId` / index |
 | **Double-Click Row** | Fires `onRowDoubleTap` and `onRowActivated` |
 | **Right-Click Row** | Fires `onRowSecondaryTapDown` with pointer coordinates |
 | **`Ctrl` / `Cmd` + Click** | Toggles individual row selection in `multi` (or `single`) mode |
-| **`Shift` + Click** | Selects contiguous visual range from anchor row |
-| **`Ctrl` / `Cmd` + `A`** | Selects all rows in `multi` mode |
+| **`Shift` + Click** | Extends contiguous visual range from the anchored record |
+| **`Ctrl` / `Cmd` + `A`** | Selects all visible rows in `multi` mode |
 | **`ArrowUp` / `ArrowDown`** | Moves row focus (hold `Shift` to extend multi-row range) |
 | **`PageUp` / `PageDown`** | Jumps one viewport page up or down |
 | **`Home` / `End`** | Jumps immediately to first (`0`) or last (`N - 1`) visual row |

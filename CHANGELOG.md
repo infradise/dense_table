@@ -1,3 +1,9 @@
+## 1.1.0
+
+* **Stable Row Identity (`rowIdBuilder`)**: Added `rowIdBuilder` (`DenseRowIdGetter`), `dataIdentity`, and `onSelectedIdsChanged` to `DenseTable` and `DenseTable.builder` so selection, keyboard focus, and the `Shift`-range anchor track stable domain record IDs across external search filtering, pagination, and live streaming insertions/deletions.
+* **Controller Stable ID APIs**: Extended `DenseTableController` with `initialSelectedRowIds`, `retainHiddenSelectionIds` (retains hidden selections across filter queries while scoping header `Select All` toggle to visible rows via `toggleSelectAllVisible`), `selectedRowIds`, `totalSelectedIdCount`, `focusedRowId`, `anchorRowId`, `isRowIdSelected`, `indexOfRowId`, `rowIdAt`, `selectRowId`, `toggleRowId`, `setSelectedRowIds`, `setFocusedRowId`, and `scrollToRowId`.
+* **Double-Tap Record Identity**: Bound `300ms` double-click detection to stable row identity when `rowIdBuilder` is configured so live row insertions between clicks never misfire on an adjacent record.
+
 ## 1.0.0
 
 * **Zero-Dependency Architecture**: Removed all external runtime and development package dependencies (`dependencies` uses only the Flutter SDK; Wasm-ready across Android, iOS, Linux, macOS, Windows, and Web).

@@ -422,4 +422,293 @@ void main() {
       expect(dark.copyWith(rowHeight: 28.0).rowHeight, 28.0);
     });
   });
+
+  group('Stable Row Identity (v1.1.0 rowIdBuilder & Off-Screen Focus)', () {
+    testWidgets(
+      'Shift+Click extends from the exact same record across external filtering and sorting',
+      (tester) async {
+        final controller = DenseTableController();
+        var records = <(String, int, String)>[
+          ('pod-alpha', 30, 'Pending'),
+          ('pod-bravo', 40, 'Running'),
+          ('pod-charlie', 10, 'Running'),
+          ('pod-delta', 50, 'Degraded'),
+          ('pod-echo', 20, 'Running'),
+          ('pod-foxtrot', 60, 'Running'),
+        ];
+        var latestSelectedIds = const <Object>{};
+
+        Widget buildFilteredTable() {
+          return _wrapTestHarness(
+            SizedBox(
+              width: 640,
+              height: 320,
+              child: DenseTable.builder(
+                controller: controller,
+                autofocus: true,
+                selectionMode: DenseSelectionMode.multi,
+                showCheckboxColumn: true,
+                rowCount: records.length,
+                rowIdBuilder: (row) => records[row].$1,
+                rawCellValue: (row, col) => switch (col) {
+                  0 => records[row].$1,
+                  1 => records[row].$2,
+                  _ => records[row].$3,
+                },
+                onSelectedIdsChanged: (ids) => latestSelectedIds = ids,
+                columns: const <DenseColumn>[
+                  DenseColumn(title: 'Pod', initialWidth: 180),
+                  DenseColumn(title: 'Latency', initialWidth: 120),
+                  DenseColumn(title: 'Phase', initialWidth: 120),
+                ],
+                cellBuilder: (context, row, col) => switch (col) {
+                  0 => Text(records[row].$1),
+                  1 => Text('${records[row].$2}'),
+                  _ => Text(records[row].$3),
+                },
+              ),
+            ),
+          );
+        }
+
+        await tester.pumpWidget(buildFilteredTable());
+        await tester.pumpAndSettle();
+
+        // Click 'pod-bravo' (original index 1 in unfiltered list).
+        await tester.tap(find.text('pod-bravo'));
+        await tester.pump();
+        expect(controller.anchorRowId, 'pod-bravo');
+        expect(controller.anchorRow, 1);
+        expect(controller.selectedRowIds, <Object>{'pod-bravo'});
+
+        // Apply external filter: keep only 'Running' pods!
+        // Filtered order:
+        //   0: ('pod-bravo', 40)
+        //   1: ('pod-charlie', 10)
+        //   2: ('pod-echo', 20)
+        //   3: ('pod-foxtrot', 60)
+        records = records.where((r) => r.$3 == 'Running').toList();
+        await tester.pumpWidget(buildFilteredTable());
+        await tester.pumpAndSettle();
+
+        // Anchor moved from index 1 -> index 0 automatically via 'pod-bravo'!
+        expect(controller.anchorRowId, 'pod-bravo');
+        expect(controller.anchorRow, 0);
+        expect(controller.selectedRows, <int>{0});
+
+        // Sort by Latency ascending (column 1):
+        // Visual order becomes:
+        //   visual 0: pod-charlie (10)
+        //   visual 1: pod-echo (20)
+        //   visual 2: pod-bravo (40)  <-- anchor!
+        //   visual 3: pod-foxtrot (60)
+        await tester.tap(find.text('Latency'));
+        await tester.pump();
+
+        // Shift+Click 'pod-charlie' (visual 0) -> must select visual 0..2:
+        // {'pod-charlie', 'pod-echo', 'pod-bravo'}, NOT 'pod-foxtrot'!
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+        await tester.tap(find.text('pod-charlie'));
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+        await tester.pump();
+
+        expect(
+          controller.selectedRowIds,
+          <Object>{'pod-charlie', 'pod-echo', 'pod-bravo'},
+        );
+        expect(
+          latestSelectedIds,
+          <Object>{'pod-charlie', 'pod-echo', 'pod-bravo'},
+        );
+        expect(controller.anchorRowId, 'pod-bravo');
+
+        controller.dispose();
+      },
+    );
+
+    testWidgets(
+      'retains hidden selectedRowIds across filters and scopes toggleSelectAllVisible',
+      (tester) async {
+        final controller = DenseTableController(
+          initialSelectedRowIds: const <Object>{'row-hidden'},
+        );
+        var items = <String>['row-hidden', 'row-vis-1', 'row-vis-2'];
+
+        Widget buildView() {
+          return _wrapTestHarness(
+            SizedBox(
+              width: 500,
+              height: 260,
+              child: DenseTable.builder(
+                controller: controller,
+                selectionMode: DenseSelectionMode.multi,
+                showCheckboxColumn: true,
+                rowCount: items.length,
+                rowIdBuilder: (i) => items[i],
+                columns: const <DenseColumn>[
+                  DenseColumn(title: 'ID', initialWidth: 240),
+                ],
+                cellBuilder: (_, row, __) => Text(items[row]),
+              ),
+            ),
+          );
+        }
+
+        await tester.pumpWidget(buildView());
+        await tester.pumpAndSettle();
+
+        expect(controller.selectedRows, <int>{0});
+        expect(controller.selectedRowIds, <Object>{'row-hidden'});
+
+        // Filter out 'row-hidden' -> hidden ID remains preserved!
+        items = <String>['row-vis-1', 'row-vis-2'];
+        await tester.pumpWidget(buildView());
+        await tester.pumpAndSettle();
+
+        expect(controller.selectedCount, 0);
+        expect(controller.totalSelectedIdCount, 1);
+        expect(controller.isRowIdSelected('row-hidden'), isTrue);
+
+        // Select all visible rows, then toggleSelectAllVisible off ->
+        // removes 'row-vis-1' & 'row-vis-2', while preserving 'row-hidden'!
+        controller.toggleSelectAllVisible(items.length);
+        expect(
+          controller.selectedRowIds,
+          <Object>{'row-hidden', 'row-vis-1', 'row-vis-2'},
+        );
+
+        controller.toggleSelectAllVisible(items.length);
+        expect(controller.selectedCount, 0);
+        expect(controller.selectedRowIds, <Object>{'row-hidden'});
+
+        // Restore full dataset -> 'row-hidden' re-highlights automatically!
+        items = <String>['row-hidden', 'row-vis-1', 'row-vis-2'];
+        await tester.pumpWidget(buildView());
+        await tester.pumpAndSettle();
+        expect(controller.selectedRows, <int>{0});
+
+        controller.dispose();
+      },
+    );
+
+    testWidgets(
+      'live streaming insertions shift indices while keeping selection, focus, and scrollToRowId bound',
+      (tester) async {
+        final controller = DenseTableController();
+        var streamRows = <String>['pod-1', 'pod-2', 'pod-3'];
+
+        Widget buildStreamTable() {
+          return _wrapTestHarness(
+            SizedBox(
+              width: 500,
+              height: 240,
+              child: DenseTable.builder(
+                controller: controller,
+                selectionMode: DenseSelectionMode.multi,
+                rowCount: streamRows.length,
+                rowIdBuilder: (i) => streamRows[i],
+                columns: const <DenseColumn>[
+                  DenseColumn(title: 'Name', initialWidth: 240),
+                ],
+                cellBuilder: (_, row, __) => Text(streamRows[row]),
+              ),
+            ),
+          );
+        }
+
+        await tester.pumpWidget(buildStreamTable());
+        await tester.pumpAndSettle();
+
+        controller.selectRowId('pod-2');
+        expect(controller.selectedRows, <int>{1});
+        expect(controller.focusedRow, 1);
+        expect(controller.indexOfRowId('pod-2'), 1);
+
+        // Prepend 2 new pods at the top of the live stream!
+        streamRows = <String>['pod-new-a', 'pod-new-b', ...streamRows];
+        await tester.pumpWidget(buildStreamTable());
+        await tester.pumpAndSettle();
+
+        expect(controller.selectedRows, <int>{3});
+        expect(controller.focusedRow, 3);
+        expect(controller.anchorRow, 3);
+        expect(controller.indexOfRowId('pod-2'), 3);
+
+        controller.setFocusedRowId('pod-new-b', updateAnchor: true);
+        expect(controller.focusedRow, 1);
+        expect(controller.anchorRowId, 'pod-new-b');
+
+        controller.toggleRowId('pod-new-a');
+        expect(controller.selectedRowIds, <Object>{'pod-2', 'pod-new-a'});
+
+        controller.setSelectedRowIds(
+          const <Object>{'pod-3'},
+          focusedRowId: 'pod-3',
+        );
+        expect(controller.selectedRows, <int>{4});
+        controller.scrollToRowId('pod-3');
+        await tester.pump();
+
+        controller.dispose();
+      },
+    );
+
+    testWidgets(
+      'retains keyboard focus when focused row scrolls 50,000 rows off-screen and snaps back on ArrowDown',
+      (tester) async {
+        final controller = DenseTableController();
+        final focusNode = FocusNode();
+        final verticalScroll = ScrollController();
+
+        await tester.pumpWidget(
+          _wrapTestHarness(
+            SizedBox(
+              width: 600,
+              height: 240,
+              child: DenseTable.builder(
+                controller: controller,
+                focusNode: focusNode,
+                verticalScrollController: verticalScroll,
+                autofocus: true,
+                selectionMode: DenseSelectionMode.multi,
+                rowCount: 100000,
+                rowIdBuilder: (i) => 'id-$i',
+                columns: const <DenseColumn>[
+                  DenseColumn(title: 'ID', initialWidth: 200),
+                ],
+                cellBuilder: (_, row, __) => Text('id-$row'),
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        // Click row 2 ('id-2') -> focused & table owns FocusNode.
+        await tester.tap(find.text('id-2'));
+        await tester.pump();
+        expect(focusNode.hasFocus, isTrue);
+        expect(controller.focusedRow, 2);
+
+        // Scroll 50,000 rows away so 'id-2' is unmounted far off-screen!
+        controller.scrollToVisualRow(50000);
+        await tester.pumpAndSettle();
+        expect(find.text('id-2'), findsNothing);
+        expect(find.text('id-50000'), findsOneWidget);
+
+        // FocusNode MUST remain focused on the table container!
+        expect(focusNode.hasFocus, isTrue);
+
+        // Pressing ArrowDown advances to row 3 ('id-3') and snaps viewport back!
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+        await tester.pumpAndSettle();
+        expect(controller.focusedRow, 3);
+        expect(controller.focusedRowId, 'id-3');
+        expect(find.text('id-3'), findsOneWidget);
+
+        controller.dispose();
+        focusNode.dispose();
+        verticalScroll.dispose();
+      },
+    );
+  });
 }

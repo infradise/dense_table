@@ -16,9 +16,12 @@ class DenseTableDemoApp extends StatefulWidget {
 class _DenseTableDemoAppState extends State<DenseTableDemoApp> {
   final DenseTableController _controller = DenseTableController();
 
-  int _rowCount = 100000;
+  int _baseRowCount = 100000;
+  String? _statusFilter;
   bool _darkMode = true;
-  int? _lastActivatedRow;
+  Object? _lastActivatedPodId;
+
+  late List<int> _filteredSourceIndices = _computeFilteredIndices();
 
   static const List<String> _namespaces = <String>[
     'prod-core',
@@ -42,20 +45,53 @@ class _DenseTableDemoAppState extends State<DenseTableDemoApp> {
     super.dispose();
   }
 
+  List<int> _computeFilteredIndices() {
+    if (_statusFilter == null) {
+      return List<int>.generate(_baseRowCount, (i) => i, growable: false);
+    }
+    final matches = <int>[];
+    for (var i = 0; i < _baseRowCount; i++) {
+      if (_statuses[i % _statuses.length] == _statusFilter) {
+        matches.add(i);
+      }
+    }
+    return matches;
+  }
+
+  void _updateDataset({int? baseCount, Object? statusFilter = _unchanged}) {
+    setState(() {
+      if (baseCount != null) {
+        _baseRowCount = baseCount;
+      }
+      if (!identical(statusFilter, _unchanged)) {
+        _statusFilter = statusFilter as String?;
+      }
+      _filteredSourceIndices = _computeFilteredIndices();
+    });
+  }
+
+  static const Object _unchanged = Object();
+
+  String _podIdForSource(int sourceRow) =>
+      'pod-worker-${sourceRow.toString().padLeft(6, '0')}';
+
+  Object _rowId(int row) => _podIdForSource(_filteredSourceIndices[row]);
+
   Object _rawValue(int row, int col) {
+    final sourceRow = _filteredSourceIndices[row];
     switch (col) {
       case 0:
-        return row;
+        return sourceRow;
       case 1:
-        return _namespaces[row % _namespaces.length];
+        return _namespaces[sourceRow % _namespaces.length];
       case 2:
-        return 'pod-worker-${row.toString().padLeft(6, '0')}';
+        return _podIdForSource(sourceRow);
       case 3:
-        return _statuses[row % _statuses.length];
+        return _statuses[sourceRow % _statuses.length];
       case 4:
-        return ((row * 17) % 950) / 10.0;
+        return ((sourceRow * 17) % 950) / 10.0;
       case 5:
-        return 64 + ((row * 31) % 2048);
+        return 64 + ((sourceRow * 31) % 2048);
       default:
         return '';
     }
@@ -73,9 +109,10 @@ class _DenseTableDemoAppState extends State<DenseTableDemoApp> {
         _darkMode ? const Color(0xFFE4E6EB) : const Color(0xFF1F2328);
     final borderColor =
         _darkMode ? const Color(0xFF383A3D) : const Color(0xFFD0D5DD);
+    final visibleCount = _filteredSourceIndices.length;
 
     return WidgetsApp(
-      title: 'DenseTable 1.0.0 Showcase',
+      title: 'DenseTable 1.1.0 Showcase',
       color: const Color(0xFF2563EB),
       debugShowCheckedModeBanner: false,
       pageRouteBuilder: <T>(RouteSettings settings, WidgetBuilder builder) {
@@ -105,7 +142,7 @@ class _DenseTableDemoAppState extends State<DenseTableDemoApp> {
                 alignment: WrapAlignment.spaceBetween,
                 children: <Widget>[
                   Text(
-                    'DenseTable 1.0.0 Showcase',
+                    'DenseTable 1.1.0 Showcase',
                     style: TextStyle(
                       color: fgColor,
                       fontSize: 15.0,
@@ -118,27 +155,54 @@ class _DenseTableDemoAppState extends State<DenseTableDemoApp> {
                     children: <Widget>[
                       _ToolbarButton(
                         label: '1K Rows',
-                        active: _rowCount == 1000,
+                        active: _baseRowCount == 1000,
                         darkMode: _darkMode,
-                        onTap: () => setState(() => _rowCount = 1000),
+                        onTap: () => _updateDataset(baseCount: 1000),
                       ),
                       _ToolbarButton(
                         label: '10K Rows',
-                        active: _rowCount == 10000,
+                        active: _baseRowCount == 10000,
                         darkMode: _darkMode,
-                        onTap: () => setState(() => _rowCount = 10000),
+                        onTap: () => _updateDataset(baseCount: 10000),
                       ),
                       _ToolbarButton(
                         label: '100K Rows',
-                        active: _rowCount == 100000,
+                        active: _baseRowCount == 100000,
                         darkMode: _darkMode,
-                        onTap: () => setState(() => _rowCount = 100000),
+                        onTap: () => _updateDataset(baseCount: 100000),
+                      ),
+                      _ToolbarButton(
+                        label: 'Filter: All',
+                        active: _statusFilter == null,
+                        darkMode: _darkMode,
+                        onTap: () => _updateDataset(statusFilter: null),
+                      ),
+                      _ToolbarButton(
+                        label: 'Filter: Running',
+                        active: _statusFilter == 'Running',
+                        darkMode: _darkMode,
+                        onTap: () => _updateDataset(statusFilter: 'Running'),
+                      ),
+                      _ToolbarButton(
+                        label: 'Filter: Pending',
+                        active: _statusFilter == 'Pending',
+                        darkMode: _darkMode,
+                        onTap: () => _updateDataset(statusFilter: 'Pending'),
+                      ),
+                      _ToolbarButton(
+                        label: 'Filter: Degraded',
+                        active: _statusFilter == 'Degraded',
+                        darkMode: _darkMode,
+                        onTap: () => _updateDataset(statusFilter: 'Degraded'),
                       ),
                       _ToolbarButton(
                         label: 'Jump Bottom',
                         darkMode: _darkMode,
-                        onTap: () =>
-                            _controller.scrollToVisualRow(_rowCount - 1),
+                        onTap: () {
+                          if (visibleCount > 0) {
+                            _controller.scrollToVisualRow(visibleCount - 1);
+                          }
+                        },
                       ),
                       _ToolbarButton(
                         label: 'Jump Top',
@@ -168,11 +232,14 @@ class _DenseTableDemoAppState extends State<DenseTableDemoApp> {
                         final sortLabel = sort == null
                             ? 'Unsorted'
                             : 'Col #${sort.columnIndex} (${sort.direction.name})';
+                        final anchorLabel = _controller.anchorRowId ?? 'None';
                         return Text(
-                          'Dataset: $_rowCount rows  •  '
-                          'Selected: ${_controller.selectedCount}  •  '
+                          'Dataset: $visibleCount rows  •  '
+                          'Selected: ${_controller.selectedCount} '
+                          '(IDs: ${_controller.totalSelectedIdCount})  •  '
+                          'Anchor: $anchorLabel  •  '
                           'Sort: $sortLabel'
-                          '${_lastActivatedRow != null ? '  •  Activated Row #$_lastActivatedRow' : ''}',
+                          '${_lastActivatedPodId != null ? '  •  Activated: $_lastActivatedPodId' : ''}',
                           style: TextStyle(
                             color: fgColor,
                             fontSize: 13.0,
@@ -189,10 +256,13 @@ class _DenseTableDemoAppState extends State<DenseTableDemoApp> {
                         selectionMode: DenseSelectionMode.multi,
                         showCheckboxColumn: true,
                         style: style,
-                        rowCount: _rowCount,
+                        rowCount: visibleCount,
+                        rowIdBuilder: _rowId,
+                        dataIdentity: _filteredSourceIndices,
                         rawCellValue: _rawValue,
                         onRowActivated: (rowIndex) {
-                          setState(() => _lastActivatedRow = rowIndex);
+                          setState(
+                              () => _lastActivatedPodId = _rowId(rowIndex));
                         },
                         columns: const <DenseColumn>[
                           DenseColumn(

@@ -72,6 +72,15 @@ typedef DenseCellBuilder = Widget Function(
 /// when using `DenseTable.builder` with built-in client-side sorting.
 typedef DenseRawValueGetter = Object? Function(int rowIndex, int columnIndex);
 
+/// Signature returning a stable record identifier (such as a UID, primary key,
+/// or object path) for [rowIndex] (`0 <= rowIndex < rowCount`).
+///
+/// When supplied to `DenseTable` (`rowIdBuilder`), row selection, keyboard
+/// focus, and the Shift-selection range anchor remain bound to the underlying
+/// record across external search filtering, pagination, and live streaming
+/// insertions or deletions.
+typedef DenseRowIdGetter = Object Function(int rowIndex);
+
 /// Rich configuration for a single column in `DenseTable`.
 @immutable
 class DenseColumn {

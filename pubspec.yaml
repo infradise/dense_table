@@ -1,6 +1,6 @@
 name: dense_table
 description: Zero-dependency high-density virtualized data table for Flutter. Renders 100,000+ rows with resizable and sortable columns, multi-selection, and keyboard navigation.
-version: 1.0.0
+version: 1.1.0
 homepage: https://github.com/infradise/dense_table
 repository: https://github.com/infradise/dense_table
 issue_tracker: https://github.com/infradise/dense_table/issues

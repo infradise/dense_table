@@ -47,6 +47,8 @@ class DenseTable extends StatefulWidget {
     required List<List<dynamic>> this.data,
     this.columnWidths = const <int, double>{},
     this.columns,
+    this.rowIdBuilder,
+    this.dataIdentity,
     this.style = const DenseStyle(),
     this.controller,
     this.verticalScrollController,
@@ -72,6 +74,7 @@ class DenseTable extends StatefulWidget {
     this.onRowSecondaryTapDown,
     this.onRowActivated,
     this.onSelectionChanged,
+    this.onSelectedIdsChanged,
     this.onSortChanged,
     this.onColumnResized,
   })  : _rowCount = null,
@@ -91,6 +94,8 @@ class DenseTable extends StatefulWidget {
     required int rowCount,
     required DenseCellBuilder cellBuilder,
     DenseRawValueGetter? rawCellValue,
+    this.rowIdBuilder,
+    this.dataIdentity,
     this.style = const DenseStyle(),
     this.controller,
     this.verticalScrollController,
@@ -115,6 +120,7 @@ class DenseTable extends StatefulWidget {
     this.onRowSecondaryTapDown,
     this.onRowActivated,
     this.onSelectionChanged,
+    this.onSelectedIdsChanged,
     this.onSortChanged,
     this.onColumnResized,
   })  : assert(rowCount >= 0, 'rowCount must be non-negative.'),
@@ -139,6 +145,19 @@ class DenseTable extends StatefulWidget {
 
   /// Optional rich column definitions overriding [headers] and [columnWidths].
   final List<DenseColumn>? columns;
+
+  /// Optional callback returning a stable record ID (UID, primary key, or path)
+  /// for each row (`0 .. rowCount - 1`).
+  ///
+  /// When provided, selection, keyboard focus, and the Shift-selection anchor
+  /// remain bound to the underlying record across external search filtering,
+  /// pagination, and live streaming insertions/deletions.
+  final DenseRowIdGetter? rowIdBuilder;
+
+  /// Optional identity token (such as a reference to the backing `List<T>` or
+  /// a revision counter) enabling `O(1)` change detection on [DenseTable.builder]
+  /// rebuilds without rescanning [rowIdBuilder].
+  final Object? dataIdentity;
 
   /// Visual theme and dimension configuration.
   final DenseStyle style;
@@ -221,6 +240,10 @@ class DenseTable extends StatefulWidget {
   /// Called whenever the set of selected original row indices changes.
   final ValueChanged<Set<int>>? onSelectionChanged;
 
+  /// Called whenever the set of selected stable row IDs changes (when
+  /// [rowIdBuilder] is provided).
+  final ValueChanged<Set<Object>>? onSelectedIdsChanged;
+
   /// Called whenever the active [DenseSortState] changes (`null` = unsorted).
   final ValueChanged<DenseSortState?>? onSortChanged;
 
@@ -256,13 +279,19 @@ class _DenseTableState extends State<DenseTable> {
   List<int>? _sortedToOriginal;
   List<int>? _originalToSorted;
   DenseSortState? _cachedSortState;
+
+  List<Object>? _rowIds;
+  Map<Object, int>? _idToIndex;
+
   Set<int> _lastReportedSelection = const <int>{};
+  Set<Object> _lastReportedSelectedIds = const <Object>{};
+  bool _postFrameSelectionReportScheduled = false;
 
   bool _isSyncingHorizontal = false;
   double _lastBodyViewportHeight = 240.0;
 
   DateTime? _lastTapTimestamp;
-  int? _lastTapOriginalIndex;
+  Object? _lastTapIdentity;
 
   DenseTableController get _controller =>
       widget.controller ?? _internalController!;
@@ -303,6 +332,7 @@ class _DenseTableState extends State<DenseTable> {
     }
 
     _resolveColumnsAndInitialWidths(preserveResized: false);
+    _syncRowIdentityIfNeeded(oldWidget: null, forceBind: true);
     _attachController(_controller);
     _attachHorizontalSync();
     _focusNode.addListener(_handleFocusChange);
@@ -313,7 +343,8 @@ class _DenseTableState extends State<DenseTable> {
   void didUpdateWidget(covariant DenseTable oldWidget) {
     super.didUpdateWidget(oldWidget);
 
-    if (oldWidget.controller != widget.controller) {
+    final controllerSwapped = oldWidget.controller != widget.controller;
+    if (controllerSwapped) {
       (oldWidget.controller ?? _internalController)?.removeListener(
         _handleControllerChanged,
       );
@@ -378,12 +409,136 @@ class _DenseTableState extends State<DenseTable> {
       preserveResized: !columnCountChanged && !widthsMapChanged,
     );
 
-    _controller.clampToRowCount(_totalRowCount);
+    final rowIdsChanged = _syncRowIdentityIfNeeded(
+      oldWidget: oldWidget,
+      forceBind: controllerSwapped,
+    );
 
-    final dataChanged = !identical(oldWidget.data, widget.data) ||
-        oldWidget._rowCount != widget._rowCount;
+    final dataChanged = rowIdsChanged ||
+        !identical(oldWidget.data, widget.data) ||
+        oldWidget._rowCount != widget._rowCount ||
+        (widget.dataIdentity != null &&
+            !identical(oldWidget.dataIdentity, widget.dataIdentity));
     if (dataChanged) {
       _rebuildSortIndexIfNeeded(force: true);
+    }
+  }
+
+  bool _syncRowIdentityIfNeeded({
+    required DenseTable? oldWidget,
+    required bool forceBind,
+  }) {
+    final rowCount = _totalRowCount;
+    final idGetter = widget.rowIdBuilder;
+
+    if (idGetter == null) {
+      final hadIds = _rowIds != null;
+      _rowIds = null;
+      _idToIndex = null;
+      final controllerChanged = _controller.syncRowIdentity(
+        rowIds: null,
+        idToIndex: null,
+        totalRowCount: rowCount,
+        notify: false,
+      );
+      _scheduleSelectionReportIfChanged(
+        notifyControllerPostFrame: oldWidget != null && controllerChanged,
+      );
+      return hadIds;
+    }
+
+    final canSkipScan = !forceBind &&
+        oldWidget != null &&
+        oldWidget.rowIdBuilder != null &&
+        _rowIds != null &&
+        _idToIndex != null &&
+        _rowIds!.length == rowCount &&
+        widget.dataIdentity != null &&
+        identical(oldWidget.dataIdentity, widget.dataIdentity) &&
+        identical(oldWidget.data, widget.data);
+
+    var idsChanged = false;
+    if (!canSkipScan) {
+      final existing = _rowIds;
+      if (existing == null || existing.length != rowCount) {
+        idsChanged = true;
+      } else {
+        for (var i = 0; i < rowCount; i++) {
+          if (existing[i] != idGetter(i)) {
+            idsChanged = true;
+            break;
+          }
+        }
+      }
+
+      if (idsChanged || _idToIndex == null) {
+        final nextIds = List<Object>.generate(
+          rowCount,
+          idGetter,
+          growable: false,
+        );
+        final nextMap = <Object, int>{};
+        for (var i = 0; i < rowCount; i++) {
+          nextMap.putIfAbsent(nextIds[i], () => i);
+        }
+        _rowIds = nextIds;
+        _idToIndex = nextMap;
+      }
+    }
+
+    var controllerChanged = false;
+    if (idsChanged || forceBind) {
+      controllerChanged = _controller.syncRowIdentity(
+        rowIds: _rowIds,
+        idToIndex: _idToIndex,
+        totalRowCount: rowCount,
+        notify: false,
+      );
+    }
+    _scheduleSelectionReportIfChanged(
+      notifyControllerPostFrame: oldWidget != null && controllerChanged,
+    );
+    return idsChanged;
+  }
+
+  void _scheduleSelectionReportIfChanged({
+    bool notifyControllerPostFrame = false,
+  }) {
+    final rowsDiff =
+        !_setsEqual(_lastReportedSelection, _controller.selectedRows);
+    final idsDiff = widget.rowIdBuilder != null &&
+        !_setsEqual(_lastReportedSelectedIds, _controller.selectedRowIds);
+    if (!rowsDiff && !idsDiff && !notifyControllerPostFrame) {
+      return;
+    }
+    if (_postFrameSelectionReportScheduled) {
+      return;
+    }
+    _postFrameSelectionReportScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _postFrameSelectionReportScheduled = false;
+      if (!mounted) {
+        return;
+      }
+      if (notifyControllerPostFrame) {
+        _controller.notifyIdentitySynced();
+      }
+      _reportSelectionCallbacksIfNeeded();
+    });
+  }
+
+  void _reportSelectionCallbacksIfNeeded() {
+    final currentRows = _controller.selectedRows;
+    if (!_setsEqual(_lastReportedSelection, currentRows)) {
+      _lastReportedSelection = Set<int>.of(currentRows);
+      widget.onSelectionChanged?.call(currentRows);
+    }
+    if (widget.rowIdBuilder != null) {
+      final currentIds = _controller.selectedRowIds;
+      if (!_setsEqual(_lastReportedSelectedIds, currentIds)) {
+        _lastReportedSelectedIds = Set<Object>.of(currentIds);
+        widget.onSelectedIdsChanged?.call(currentIds);
+      }
     }
   }
 
@@ -420,6 +575,7 @@ class _DenseTableState extends State<DenseTable> {
       }
     }
     _lastReportedSelection = Set<int>.of(controller.selectedRows);
+    _lastReportedSelectedIds = Set<Object>.of(controller.selectedRowIds);
     controller.addListener(_handleControllerChanged);
   }
 
@@ -486,18 +642,14 @@ class _DenseTableState extends State<DenseTable> {
       needsRebuild = true;
     }
 
-    final currentSelection = _controller.selectedRows;
-    if (!_setsEqual(_lastReportedSelection, currentSelection)) {
-      _lastReportedSelection = Set<int>.of(currentSelection);
-      widget.onSelectionChanged?.call(_controller.selectedRows);
-    }
+    _reportSelectionCallbacksIfNeeded();
 
     if (needsRebuild && mounted) {
       setState(() {});
     }
   }
 
-  bool _setsEqual(Set<int> a, Set<int> b) =>
+  bool _setsEqual<T>(Set<T> a, Set<T> b) =>
       a.length == b.length && a.containsAll(b);
 
   void _resolveColumnsAndInitialWidths({required bool preserveResized}) {
@@ -687,13 +839,16 @@ class _DenseTableState extends State<DenseTable> {
     }
 
     final originalIndex = _visualToOriginalIndex(visualIndex);
+    final tapIdentity = _rowIds != null && originalIndex < _rowIds!.length
+        ? _rowIds![originalIndex]
+        : originalIndex;
     final now = DateTime.now();
     final isDoubleTap = !fromCheckbox &&
-        _lastTapOriginalIndex == originalIndex &&
+        _lastTapIdentity == tapIdentity &&
         _lastTapTimestamp != null &&
         now.difference(_lastTapTimestamp!) <= _doubleTapWindow;
 
-    _lastTapOriginalIndex = originalIndex;
+    _lastTapIdentity = tapIdentity;
     _lastTapTimestamp = isDoubleTap ? null : now;
 
     _applyPointerSelection(
@@ -774,6 +929,7 @@ class _DenseTableState extends State<DenseTable> {
     _controller.setSelectedRows(
       next,
       focusedRow: _visualToOriginalIndex(toVisual),
+      preserveHiddenSelectedIds: additive,
     );
   }
 
@@ -784,11 +940,7 @@ class _DenseTableState extends State<DenseTable> {
     if (_totalRowCount == 0) {
       return;
     }
-    if (_controller.selectedCount == _totalRowCount) {
-      _controller.clearSelection();
-    } else {
-      _controller.selectAll(_totalRowCount);
-    }
+    _controller.toggleSelectAllVisible(_totalRowCount);
   }
 
   KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
@@ -890,7 +1042,9 @@ class _DenseTableState extends State<DenseTable> {
     if (widget.selectionMode == DenseSelectionMode.multi && isShift) {
       final anchorOrig =
           _controller.anchorRow ?? currentOriginal ?? targetOriginal;
-      _controller.setFocusedRow(anchorOrig, updateAnchor: true);
+      if (_controller.anchorRow == null) {
+        _controller.setFocusedRow(anchorOrig, updateAnchor: true);
+      }
       final anchorVis = _originalToVisualIndex(anchorOrig) ?? targetVisual;
       _selectVisualRange(
         fromVisual: anchorVis,

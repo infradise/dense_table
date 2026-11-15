@@ -6,8 +6,17 @@ void main() {
     await tester.pumpWidget(const DenseTableDemoApp());
     await tester.pumpAndSettle();
 
-    expect(find.text('DenseTable 1.0.0 Showcase'), findsOneWidget);
+    expect(find.text('DenseTable 1.1.0 Showcase'), findsOneWidget);
     expect(find.textContaining('Dataset: 100000 rows'), findsOneWidget);
     expect(find.text('pod-worker-000000'), findsOneWidget);
+
+    await tester.tap(find.text('pod-worker-000000'));
+    await tester.pump();
+    expect(find.textContaining('Anchor: pod-worker-000000'), findsOneWidget);
+
+    await tester.tap(find.text('Filter: Degraded'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Dataset: 20000 rows'), findsOneWidget);
+    expect(find.textContaining('Selected: 0 (IDs: 1)'), findsOneWidget);
   });
 }

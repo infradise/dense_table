@@ -1,19 +1,19 @@
 name: dense_table
-description: >-
-  A high-density data table widget designed for professional desktop and web applications.
-  Prioritizes performance, virtualization, and pixel-perfect control.
-version: 0.1.0
+description: Zero-dependency high-density virtualized data table for Flutter. Renders 100,000+ rows with resizable and sortable columns, multi-selection, and keyboard navigation.
+version: 1.0.0
 homepage: https://github.com/infradise/dense_table
 repository: https://github.com/infradise/dense_table
 issue_tracker: https://github.com/infradise/dense_table/issues
-# documentation: https://github.com/infradise/dense_table/wiki
-
-# See https://dart.dev/tools/pub/pubspec
-# license: Apache-2.0
+topics:
+  - data-table
+  - datagrid
+  - table
+  - virtualization
+  - grid
 
 environment:
-  sdk: '>=3.0.0 <4.0.0'
-  flutter: ">=3.0.0"
+  sdk: '>=3.3.0 <4.0.0'
+  flutter: '>=3.19.0'
 
 dependencies:
   flutter:
@@ -22,8 +22,3 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^6.0.0
-
-  dart_flutter_team_lints: ^3.5.2
-  lints: ^6.0.0
-  test: ^1.25.0

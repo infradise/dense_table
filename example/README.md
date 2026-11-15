@@ -1,24 +1,16 @@
 # dense_table_example
 
-This is a sample application demonstrating the capabilities of the [dense_table](../) package.
+Interactive sample application demonstrating `dense_table` `1.0.0` across Desktop, Web (Wasm), and Mobile:
 
-It showcases how to implement a high-density data table with a professional dark theme, similar to IDE interfaces.
+- **`O(1)` Virtualization at 100,000 Rows**: Switch instantaneously between `1,000`, `10,000`, and `100,000` rows or jump straight to the bottom row without frame drops.
+- **Resizable & Sortable Columns**: Drag column dividers (or double-click to reset width) and click headers to sort 100,000 rows ascending/descending.
+- **Multi-Row Selection & Keyboard Navigation**: Click, `Ctrl`/`Cmd`+Click, `Shift`+Click range selection, `Ctrl`/`Cmd`+`A`, checkboxes, and `ArrowUp`/`Down`, `PageUp`/`Down`, `Home`/`End`, `Enter` keyboard shortcuts.
+- **Dark & Light IDE Themes**: Toggle between `DenseStyle.dark()` and `DenseStyle.light()`.
 
-## Features demonstrated
+## Run
 
-* **Virtualization**: Efficiently rendering 1,000 rows of data without performance degradation.
-* **Custom Styling**: applying a dark, high-contrast theme via `DenseStyle`.
-* **Pixel-Perfect Grid**: displaying sharp borders and compact cell layouts.
-* **Column Sizing**: Setting fixed widths for specific columns.
-
-## Getting Started
-
-1.  From the root of this example directory, install dependencies:
-    ```bash
-    flutter pub get
-    ```
-
-2.  Run the app:
-    ```bash
-    flutter run
-    ```
+```bash
+cd example
+flutter pub get
+flutter run
+```

@@ -6,11 +6,11 @@
 .dart_tool/
 .DS_Store
 
-# Ignore build artifacts
+# Ignore build artifacts and lockfiles
 build/
 pubspec.lock
 
-# 3. Example folder cleanup
+# Example folder cleanup
 example/.dart_tool/
 example/.idea/
 example/android/
@@ -18,6 +18,7 @@ example/build/
 example/ios/
 example/linux/
 example/macos/
+example/test/
 example/web/
 example/windows/
 example/.gitignore
@@ -26,8 +27,8 @@ example/analysis_options.yaml
 example/dense_table_example.iml
 example/pubspec.lock
 
-# Ignore documentation assets that are too large
-docs/images/dense_table.png
-
-# Ignore test coverage reports
+# Ignore documentation assets and dev-only files
+docs/
 coverage/
+test/
+analysis_options.yaml

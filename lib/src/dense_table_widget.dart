@@ -359,6 +359,7 @@ class _DenseTableState extends State<DenseTable> {
   );
   final Object _editTapRegionGroup = Object();
   Object? _activeEditBaselineValue;
+  String _activeEditBaselineText = '';
   String _activeEditInitialText = '';
   bool _isCommittingOrCancelingEdit = false;
 
@@ -478,13 +479,33 @@ class _DenseTableState extends State<DenseTable> {
     _resolveColumnsAndInitialWidths(
       preserveResized: !columnCountChanged && !widthsMapChanged,
     );
+    var columnsReconciled = _controller.clampToColumnCount(
+      _resolvedColumns.length,
+      notify: false,
+    );
 
     final rowIdsChanged = _syncRowIdentityIfNeeded(
       oldWidget: oldWidget,
       forceBind: controllerSwapped,
     );
 
+    final activeEdit = _controller.editingCell;
+    if (activeEdit != null &&
+        !_isCellEditable(activeEdit.rowIndex, activeEdit.columnIndex)) {
+      _controller.syncEditingSession(
+        coord: null,
+        rowId: null,
+        errorText: null,
+        notify: false,
+      );
+      columnsReconciled = true;
+    }
+    if (columnsReconciled) {
+      _scheduleSelectionReportIfChanged(notifyControllerPostFrame: true);
+    }
+
     final dataChanged = rowIdsChanged ||
+        columnCountChanged ||
         !identical(oldWidget.data, widget.data) ||
         oldWidget._rowCount != widget._rowCount ||
         (widget.dataIdentity != null &&
@@ -1006,11 +1027,15 @@ class _DenseTableState extends State<DenseTable> {
     return widget.editValueGetter?.call(originalRowIndex, columnIndex);
   }
 
-  String _readInitialEditText(int originalRowIndex, int columnIndex) {
+  String _readBaselineEditText(int originalRowIndex, int columnIndex) {
     if (widget.trackDirtyCells) {
-      final staged = _controller.dirtyTextAt(originalRowIndex, columnIndex);
-      if (staged != null) {
-        return staged;
+      final existingDirty = _controller.dirtyChangeAt(
+        originalRowIndex,
+        columnIndex,
+      );
+      if (existingDirty != null) {
+        return existingDirty.baselineText ??
+            (existingDirty.previousValue?.toString() ?? '');
       }
     }
     final editGetter = widget.editValueGetter;
@@ -1019,6 +1044,16 @@ class _DenseTableState extends State<DenseTable> {
     }
     final raw = _readBaselineCellValue(originalRowIndex, columnIndex);
     return raw?.toString() ?? '';
+  }
+
+  String _readInitialEditText(int originalRowIndex, int columnIndex) {
+    if (widget.trackDirtyCells) {
+      final staged = _controller.dirtyTextAt(originalRowIndex, columnIndex);
+      if (staged != null) {
+        return staged;
+      }
+    }
+    return _readBaselineEditText(originalRowIndex, columnIndex);
   }
 
   bool _startEditingCell(int originalRowIndex, int columnIndex) {
@@ -1053,8 +1088,10 @@ class _DenseTableState extends State<DenseTable> {
     _ensureColumnVisible(columnIndex);
 
     final baseline = _readBaselineCellValue(originalRowIndex, columnIndex);
+    final baselineText = _readBaselineEditText(originalRowIndex, columnIndex);
     final initialText = _readInitialEditText(originalRowIndex, columnIndex);
     _activeEditBaselineValue = baseline;
+    _activeEditBaselineText = baselineText;
     _activeEditInitialText = initialText;
     _editTextController.value = TextEditingValue(
       text: initialText,
@@ -1128,6 +1165,7 @@ class _DenseTableState extends State<DenseTable> {
         coord: coord,
         rowId: _controller.rowIdAt(coord.rowIndex) ?? _controller.editingRowId,
         previousValue: baseline,
+        baselineText: _activeEditBaselineText,
         newText: draft,
       );
 

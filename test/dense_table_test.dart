@@ -1407,5 +1407,142 @@ void main() {
         controller.dispose();
       },
     );
+
+    testWidgets(
+      'reconciles active editor, column focus, sortState, and dirtyCells when columns shrink dynamically, and aligns editValueGetter baseline revert',
+      (tester) async {
+        final controller = DenseTableController();
+        var useWideSchema = true;
+        late StateSetter rebuildHost;
+
+        await tester.pumpWidget(
+          StatefulBuilder(
+            builder: (context, setHostState) {
+              rebuildHost = setHostState;
+              final cols = useWideSchema
+                  ? const <DenseColumn>[
+                      DenseColumn(title: 'Pod', initialWidth: 120),
+                      DenseColumn(
+                        title: 'CPU',
+                        initialWidth: 140,
+                        editable: true,
+                      ),
+                      DenseColumn(
+                        title: 'Memory',
+                        initialWidth: 140,
+                        editable: true,
+                      ),
+                    ]
+                  : const <DenseColumn>[
+                      DenseColumn(title: 'Pod', initialWidth: 120),
+                    ];
+              return _wrapTestHarness(
+                SizedBox(
+                  width: 500,
+                  height: 220,
+                  child: DenseTable.builder(
+                    controller: controller,
+                    rowCount: 2,
+                    rowIdBuilder: (row) => 'pod-$row',
+                    rawCellValue: (row, col) {
+                      if (col == 0) {
+                        return 'pod-$row';
+                      }
+                      if (col == 1) {
+                        return 250 + row * 100; // numeric sort key
+                      }
+                      return 512;
+                    },
+                    editValueGetter: (row, col) {
+                      if (col == 1) {
+                        return '${250 + row * 100}m'; // formatted unit string
+                      }
+                      if (col == 2) {
+                        return '512Mi';
+                      }
+                      return 'pod-$row';
+                    },
+                    columns: cols,
+                    cellBuilder: (context, row, col) {
+                      if (col == 0) {
+                        return Text('pod-$row');
+                      }
+                      if (col == 1) {
+                        return Text('${250 + row * 100}m');
+                      }
+                      return const Text('512Mi');
+                    },
+                  ),
+                ),
+              );
+            },
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        // 1. Edit formatted CPU column (0, 1): numeric previousValue == 250, baselineText == '250m'.
+        expect(controller.startEditing(0, 1), isTrue);
+        await tester.pump();
+        await tester.enterText(find.byType(EditableText), '500m');
+        await tester.pump();
+        expect(controller.commitEditing(), isTrue);
+        await tester.pump();
+
+        expect(controller.isCellDirty(0, 1), isTrue);
+        expect(controller.dirtyChangeAt(0, 1)?.previousValue, 250);
+        expect(controller.dirtyChangeAt(0, 1)?.baselineText, '250m');
+
+        // Reverting back to '250m' clears dirty state even though rawCellValue is int 250!
+        expect(controller.startEditing(0, 1), isTrue);
+        await tester.pump();
+        await tester.enterText(find.byType(EditableText), '250m');
+        await tester.pump();
+        expect(controller.commitEditing(), isTrue);
+        await tester.pump();
+        expect(controller.isCellDirty(0, 1), isFalse);
+
+        // 2. Stage dirty edit on col 2, sort by col 2, and open active editor on col 2.
+        expect(controller.startEditing(0, 2), isTrue);
+        await tester.pump();
+        await tester.enterText(find.byType(EditableText), '1024Mi');
+        await tester.pump();
+        expect(controller.commitEditing(), isTrue);
+        await tester.pump();
+        controller.setSort(
+          const DenseSortState(
+            columnIndex: 2,
+            direction: DenseSortDirection.descending,
+          ),
+        );
+        await tester.pump();
+        expect(controller.startEditing(1, 2), isTrue);
+        await tester.pump();
+        expect(controller.editingCell, const DenseCellCoord(1, 2));
+
+        // 3. Shrink schema from 3 columns down to 1 column while editing col 2!
+        rebuildHost(() => useWideSchema = false);
+        await tester.pumpAndSettle();
+
+        expect(controller.isEditing, isFalse);
+        expect(controller.editingCell, isNull);
+        expect(controller.focusedColumn, 0);
+        expect(controller.sortState, isNull);
+        expect(controller.hasDirtyCells, isFalse);
+
+        // 4. Unmounting DenseTable while controller is mid-edit clears editingCell on external controller.
+        rebuildHost(() => useWideSchema = true);
+        await tester.pumpAndSettle();
+        expect(controller.startEditing(0, 1), isTrue);
+        await tester.pump();
+        expect(controller.isEditing, isTrue);
+
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        expect(controller.isEditing, isFalse);
+        expect(controller.editingCell, isNull);
+
+        controller.dispose();
+      },
+    );
   });
 }

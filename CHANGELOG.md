@@ -1,3 +1,9 @@
+## 1.3.1
+
+* **Dynamic Column Schema Shrink Reconciliation (`clampToColumnCount`)**: Automatically clamps or clears `editingCell`, `focusedColumn`, `sortState`, and `dirtyCells` when a table's `columns` list shrinks dynamically (such as executing a new SQL/NoSQL query with fewer columns while an inline editor is open).
+* **Formatted Baseline Revert Alignment (`DenseCellChange.baselineText`)**: Aligned `recordCellChange` baseline revert detection with `editValueGetter` when paired alongside a typed `rawCellValue` (such as numeric sort keys with formatted unit strings), preserving typed `previousValue` while cleanly clearing dirty state when edited back to the initial editable text.
+* **Controller Unmount Hygiene**: Cleared stale `editingCell` / `editingError` session state in `detachTableDelegates()` and `cancelEditing()` when an external `DenseTableController` outlives an unmounted `DenseTable`.
+
 ## 1.3.0
 
 * **Spreadsheet-Style Inline Cell Editing (`DenseColumn.editable`)**: Added zero-dependency inline cell editing built directly on `flutter/widgets.dart` `EditableText`—supporting `DenseEditTrigger` (`doubleTap`, `f2OrEnter`, `singleTap`), per-cell `canEditCell` guards, `editValueGetter`, `DenseColumn.validator`, custom `DenseColumn.editorBuilder` (`DenseCellEditContext`), `onCellEditCommitted`, and `commitOnTapOutside`.

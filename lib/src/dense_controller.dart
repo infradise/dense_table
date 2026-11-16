@@ -572,7 +572,19 @@ class DenseTableController extends ChangeNotifier {
 
   /// Discards any draft text and closes the active inline cell editor.
   void cancelEditing() {
-    _cancelEditingDelegate?.call();
+    final delegate = _cancelEditingDelegate;
+    if (delegate != null) {
+      delegate();
+      return;
+    }
+    if (_editingCell != null ||
+        _editingRowId != null ||
+        _editingError != null) {
+      _editingCell = null;
+      _editingRowId = null;
+      _editingError = null;
+      notifyListeners();
+    }
   }
 
   /// Records or updates a committed [DenseCellChange] in [dirtyCells].
@@ -593,7 +605,9 @@ class DenseTableController extends ChangeNotifier {
         : _dirtyCells[coord];
     final baseline =
         existing != null ? existing.previousValue : change.previousValue;
-    final baselineString = baseline?.toString() ?? '';
+    final baselineString =
+        (existing != null ? existing.baselineText : change.baselineText) ??
+            (baseline?.toString() ?? '');
 
     if (revertIfUnchanged && change.newText == baselineString) {
       final removedVisible = _dirtyCells.remove(coord) != null;
@@ -613,6 +627,7 @@ class DenseTableController extends ChangeNotifier {
       coord: coord,
       rowId: effectiveRowId,
       previousValue: baseline,
+      baselineText: baselineString,
       newText: change.newText,
     );
     if (existing == normalized && _dirtyCells[coord] == normalized) {
@@ -987,6 +1002,53 @@ class DenseTableController extends ChangeNotifier {
     return changed;
   }
 
+  /// Prunes any focused/editing/sorted/dirty column indices `>= columnCount`
+  /// when the table's column schema shrinks dynamically.
+  bool clampToColumnCount(int columnCount, {bool notify = true}) {
+    var changed = false;
+    if (_focusedColumn != null &&
+        (_focusedColumn! < 0 || _focusedColumn! >= columnCount)) {
+      _focusedColumn = columnCount > 0 ? columnCount - 1 : null;
+      changed = true;
+    }
+    if (_editingCell != null &&
+        (_editingCell!.columnIndex < 0 ||
+            _editingCell!.columnIndex >= columnCount)) {
+      _editingCell = null;
+      _editingRowId = null;
+      _editingError = null;
+      changed = true;
+    }
+    if (_sortState != null &&
+        (_sortState!.columnIndex < 0 ||
+            _sortState!.columnIndex >= columnCount)) {
+      _sortState = null;
+      changed = true;
+    }
+    if (_dirtyCells.isNotEmpty) {
+      final beforeDirty = _dirtyCells.length;
+      _dirtyCells.removeWhere(
+        (coord, _) => coord.columnIndex < 0 || coord.columnIndex >= columnCount,
+      );
+      if (_dirtyCells.length != beforeDirty) {
+        changed = true;
+      }
+    }
+    if (_dirtyCellsByRowId.isNotEmpty) {
+      final beforeById = _dirtyCellsByRowId.length;
+      _dirtyCellsByRowId.removeWhere(
+        (key, _) => key.$2 < 0 || key.$2 >= columnCount,
+      );
+      if (_dirtyCellsByRowId.length != beforeById) {
+        changed = true;
+      }
+    }
+    if (changed && notify) {
+      notifyListeners();
+    }
+    return changed;
+  }
+
   /// Attaches viewport and inline-editing delegates from the mounted
   /// `DenseTable` state.
   void attachTableDelegates({
@@ -1013,6 +1075,9 @@ class DenseTableController extends ChangeNotifier {
     _cancelEditingDelegate = null;
     _boundRowIds = null;
     _boundIdToIndex = null;
+    _editingCell = null;
+    _editingRowId = null;
+    _editingError = null;
   }
 }
 

@@ -87,6 +87,7 @@ class DenseCellChange {
     required this.previousValue,
     required this.newText,
     this.rowId,
+    this.baselineText,
   });
 
   /// Cell coordinate (`rowIndex`, `columnIndex`) in the current dataset.
@@ -98,6 +99,11 @@ class DenseCellChange {
   /// Original baseline value prior to uncommitted inline edits.
   final Object? previousValue;
 
+  /// Optional formatted baseline edit string (for example from `editValueGetter`)
+  /// used to detect when subsequent edits revert a cell back to its initial
+  /// editable text while keeping a typed [previousValue] (such as a [num]).
+  final String? baselineText;
+
   /// Committed text produced by the inline cell editor.
   final String newText;
 
@@ -106,12 +112,14 @@ class DenseCellChange {
     DenseCellCoord? coord,
     Object? rowId,
     Object? previousValue,
+    String? baselineText,
     String? newText,
   }) {
     return DenseCellChange(
       coord: coord ?? this.coord,
       rowId: rowId ?? this.rowId,
       previousValue: previousValue ?? this.previousValue,
+      baselineText: baselineText ?? this.baselineText,
       newText: newText ?? this.newText,
     );
   }

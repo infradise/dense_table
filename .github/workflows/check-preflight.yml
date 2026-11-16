@@ -128,6 +128,27 @@ jobs:
               print(f'ERROR: Forbidden external dev_dependencies found: {sorted(dev_deps - allowed_dev_deps)}')
               sys.exit(1)
 
+          ex_pubspec = Path('example/pubspec.yaml').read_text(encoding='utf-8')
+          if re.search(r'^dependency_overrides\s*:', ex_pubspec, flags=re.M):
+              print('ERROR: dependency_overrides is forbidden in example/pubspec.yaml.')
+              sys.exit(1)
+          for m_sec in ('dependencies', 'dev_dependencies'):
+              em = re.search(rf'^{m_sec}:\s*\n(.*?)(?=^\S|\Z)', ex_pubspec, flags=re.M | re.S)
+              if em:
+                  for line in em.group(1).splitlines():
+                      km = re.match(r'^  ([a-zA-Z0-9_]+)\s*:', line)
+                      if km and km.group(1) not in {'flutter', 'flutter_test', 'dense_table'}:
+                          print(f'ERROR: Forbidden external package in example/pubspec.yaml ({m_sec}): {km.group(1)}')
+                          sys.exit(1)
+
+          mat_hits = subprocess.run(
+              ['git', 'grep', '-n', '-I', 'package:flutter/material.dart', '--', 'lib', 'example', 'test'],
+              capture_output=True, text=True
+          )
+          if mat_hits.stdout.strip():
+              print('ERROR: Forbidden package:flutter/material.dart import detected:\n' + mat_hits.stdout)
+              sys.exit(1)
+
           raw_matches = subprocess.run(
               [
                   'git', 'grep', '-n', '-I', '-E',
@@ -275,11 +296,11 @@ jobs:
             cat "${DRY_OUT}"
           fi
 
-          if grep -E '^├── (\.github|test|docs|analysis_options\.yaml)\b' "${DRY_OUT}"; then
+          if grep -E '^[├└]── (\.github|test|docs|analysis_options\.yaml)\b' "${DRY_OUT}"; then
             echo "ERROR: Root dev/CI files leaked into published archive!"
             exit 1
           fi
-          if grep -E '^│   ├── (android|ios|linux|macos|web|windows|test|analysis_options\.yaml)\b' "${DRY_OUT}"; then
+          if grep -E '^[│ ]   [├└]── (android|ios|linux|macos|web|windows|test|analysis_options\.yaml)\b' "${DRY_OUT}"; then
             echo "ERROR: Example native runner scaffolding leaked into published archive!"
             exit 1
           fi

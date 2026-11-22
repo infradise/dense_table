@@ -1,3 +1,9 @@
+## 1.4.0
+
+* **Sort Clear Button for the 2-State Cycle (`DenseTable.showSortClearButton`)**: Added an opt-in `x` button on the actively sorted column header that clears sorting and returns the table to its original row order. This lets `DenseSortCycle.toggle` (strict `ascending <-> descending`, never unsorted) keep its predictable 2-state header clicks while still offering a way back to the source order—for example when the original order carries meaning such as a commit graph, a stream order, or server-side ranking. Painted with a zero-dependency `CustomPainter`, with a `16 x 16` hit area, a click cursor, and an accessible label (`clearSortSemanticLabel`, default `Clear sort`). Not shown for columns that use a custom `DenseColumn.headerBuilder`.
+* **`DenseTableController.clearSort()`**: Added a discoverable one-call equivalent of `setSort(null)` for custom headers, toolbars, and keyboard shortcuts. `DenseTable.onSortChanged` receives `null` when sorting is cleared by either path.
+* **Docs**: Documented on `DenseSortCycle.toggle` how to restore the unsorted order, refreshed the README comparison table and installation snippet (they still referenced `1.3.0`), and updated the example app to demonstrate `sortCycle: DenseSortCycle.toggle` with `showSortClearButton: true`.
+
 ## 1.3.1
 
 * **Dynamic Column Schema Shrink Reconciliation (`clampToColumnCount`)**: Automatically clamps or clears `editingCell`, `focusedColumn`, `sortState`, and `dirtyCells` when a table's `columns` list shrinks dynamically (such as executing a new SQL/NoSQL query with fewer columns while an inline editor is open).

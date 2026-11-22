@@ -1545,4 +1545,119 @@ void main() {
       },
     );
   });
+
+  group('Sort Clear Button for the 2-state toggle cycle (v1.4.0)', () {
+    Future<DenseTableController> pumpClearableTable(
+      WidgetTester tester, {
+      required bool showSortClearButton,
+      List<DenseSortState?>? sortChanges,
+    }) async {
+      final controller = DenseTableController();
+      await tester.pumpWidget(
+        _wrapTestHarness(
+          SizedBox(
+            width: 480,
+            height: 260,
+            child: DenseTable(
+              controller: controller,
+              sortCycle: DenseSortCycle.toggle,
+              showSortClearButton: showSortClearButton,
+              onSortChanged: sortChanges?.add,
+              headers: const <String>['Name', 'Score'],
+              columns: const <DenseColumn>[
+                DenseColumn(
+                  title: 'Name',
+                  initialWidth: 200,
+                  headerKey: ValueKey<String>('hdr_name'),
+                ),
+                DenseColumn(
+                  title: 'Score',
+                  initialWidth: 160,
+                  headerKey: ValueKey<String>('hdr_score'),
+                ),
+              ],
+              data: const <List<dynamic>>[
+                <dynamic>['charlie', 3],
+                <dynamic>['alpha', 1],
+                <dynamic>['bravo', 2],
+              ],
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      return controller;
+    }
+
+    double rowY(WidgetTester tester, String name) =>
+        tester.getTopLeft(find.text(name)).dy;
+
+    testWidgets(
+      'clear button appears only on the actively sorted header and restores the original row order',
+      (tester) async {
+        final changes = <DenseSortState?>[];
+        final controller = await pumpClearableTable(
+          tester,
+          showSortClearButton: true,
+          sortChanges: changes,
+        );
+        const clearName = ValueKey<String>('dense_clear_sort_0');
+        const clearScore = ValueKey<String>('dense_clear_sort_1');
+
+        // Unsorted: no clear button anywhere.
+        expect(find.byKey(clearName), findsNothing);
+        expect(find.byKey(clearScore), findsNothing);
+        expect(rowY(tester, 'charlie'), lessThan(rowY(tester, 'alpha')));
+
+        // Sort by Name ascending -> clear button only on Name.
+        await tester.tap(find.byKey(const ValueKey<String>('hdr_name')));
+        await tester.pumpAndSettle();
+        expect(find.byKey(clearName), findsOneWidget);
+        expect(find.byKey(clearScore), findsNothing);
+        expect(rowY(tester, 'alpha'), lessThan(rowY(tester, 'charlie')));
+
+        // The 2-state toggle never leaves the sorted state on header taps.
+        await tester.tap(find.byKey(const ValueKey<String>('hdr_name')));
+        await tester.pumpAndSettle();
+        expect(controller.sortState?.direction, DenseSortDirection.descending);
+        expect(find.byKey(clearName), findsOneWidget);
+
+        // Tapping the clear button returns to the original order.
+        await tester.tap(find.byKey(clearName));
+        await tester.pumpAndSettle();
+        expect(controller.sortState, isNull);
+        expect(find.byKey(clearName), findsNothing);
+        expect(rowY(tester, 'charlie'), lessThan(rowY(tester, 'alpha')));
+        expect(rowY(tester, 'alpha'), lessThan(rowY(tester, 'bravo')));
+        expect(changes.last, isNull);
+        expect(changes.whereType<DenseSortState>(), isNotEmpty);
+
+        controller.dispose();
+      },
+    );
+
+    testWidgets(
+      'no clear button by default and DenseTableController.clearSort() resets sorting',
+      (tester) async {
+        final controller = await pumpClearableTable(
+          tester,
+          showSortClearButton: false,
+        );
+        await tester.tap(find.byKey(const ValueKey<String>('hdr_score')));
+        await tester.pumpAndSettle();
+        expect(controller.sortState?.columnIndex, 1);
+        expect(
+          find.byKey(const ValueKey<String>('dense_clear_sort_1')),
+          findsNothing,
+        );
+
+        controller.clearSort();
+        await tester.pumpAndSettle();
+        expect(controller.sortState, isNull);
+        expect(rowY(tester, 'charlie'), lessThan(rowY(tester, 'alpha')));
+
+        controller.dispose();
+      },
+    );
+  });
 }

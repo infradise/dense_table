@@ -29,6 +29,10 @@ enum DenseSortCycle {
 
   /// Toggles strictly between `ascending` and `descending` once sorted,
   /// starting at `DenseColumn.initialSortDirection` when switching columns.
+  ///
+  /// Header clicks never return to the unsorted state; enable
+  /// `DenseTable.showSortClearButton` (or call
+  /// `DenseTableController.clearSort`) to let users restore the original order.
   toggle,
 }
 

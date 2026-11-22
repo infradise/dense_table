@@ -706,6 +706,12 @@ class DenseTableController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Clears sorting so rows return to their original order.
+  ///
+  /// Equivalent to `setSort(null)`; pairs with [DenseSortCycle.toggle], whose
+  /// header clicks never leave the sorted state.
+  void clearSort() => setSort(null);
+
   /// Cycles sorting on [columnIndex] according to [cycle] and
   /// [initialDirection].
   ///

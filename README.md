@@ -26,7 +26,7 @@ Flutter's built-in `DataTable` instantiates every cell eagerly in a single `Rend
 - **Virtualized Vertical Cell Merging (`rowSpanBuilder`)**: Merges consecutive rows in grouping columns (`Namespace`, `Controller`, `QoS`, `Category`) in `O(1)` viewport time—keeping merged cells visible even when `startRow` scrolls off-screen while preserving row click, hover, and scroll physics.
 - **Single-Pass `CustomPaint` Crisp Grid**: Paints row backgrounds (zebra striping, hover, selection, focus ring) and `1px` vertical/horizontal grid lines in a single lightweight `CustomPainter` per visible row instead of allocating nested `BoxDecoration` trees per cell.
 - **Interactive Resizable Columns**: Drag any column header divider to resize within `minColumnWidth` / `maxColumnWidth`, or double-click a divider to reset the column to its initial width.
-- **Customizable Sortable Headers**: Supports 3-state (`tristate`) or 2-state (`toggle`) sort cycles, per-column `initialSortDirection`, inline/trailing sort icon layout (`sortIconInline`, `showUnsortedSortIcon`, `activeHeaderTextStyle`), custom `sortIconBuilder`, and `headerBuilder`—backed by a cached Schwartzian index permutation (`'9.5 ms' < '12.0 ms' < '100.0 ms'`).
+- **Customizable Sortable Headers**: Supports 3-state (`tristate`) or 2-state (`toggle`) sort cycles (with an optional in-header clear button, `showSortClearButton`, and `DenseTableController.clearSort()` to restore the original order while keeping the 2-state cycle), per-column `initialSortDirection`, inline/trailing sort icon layout (`sortIconInline`, `showUnsortedSortIcon`, `activeHeaderTextStyle`), custom `sortIconBuilder`, and `headerBuilder`—backed by a cached Schwartzian index permutation (`'9.5 ms' < '12.0 ms' < '100.0 ms'`).
 - **Desktop-Grade Multi-Row Selection & Keyboard Navigation**: Supports `none`, `single`, and `multi` selection (`Click`, `Ctrl`/`Cmd`+`Click`, `Shift`+`Click` contiguous range, `Ctrl`/`Cmd`+`A`, optional checkbox column) plus full keyboard navigation (`ArrowUp`/`Down`, `Shift`+`ArrowUp`/`Down`, `PageUp`/`Down`, `Home`/`End`, `Space`, `Enter`, `Escape`) with table-level off-screen focus retention, `0ms` single-click response, and double-click activation.
 - **Bulletproof Layout Constraints**: Automatically adapts inside bounded (`Expanded`, `SizedBox`, split panes) and unbounded (`Column`, `SingleChildScrollView`, `Dialog`) parents—and even renders cleanly without a `MaterialApp` or `Scaffold` ancestor.
 
@@ -34,7 +34,7 @@ Flutter's built-in `DataTable` instantiates every cell eagerly in a single `Rend
 
 ## Comparison
 
-| Capability | Flutter `DataTable` | `dense_table` `1.3.0` |
+| Capability | Flutter `DataTable` | `dense_table` `1.4.0` |
 | :--- | :--- | :--- |
 | **External Dependencies** | Flutter SDK | **Zero (Flutter SDK only)** |
 | **100,000+ Row Virtualization** | Eager `O(N)` (freezes / OOM) | **`O(1)` fixed-extent + `.builder`** |
@@ -43,7 +43,7 @@ Flutter's built-in `DataTable` instantiates every cell eagerly in a single `Rend
 | **Stable Row ID Anchoring** | Manual index bookkeeping | **`rowIdBuilder` across sort, filter & streams** |
 | **Sticky Header + 2D Scroll Sync** | Scrolls off-screen by default | **Built-in synced 2D scrollbars** |
 | **Interactive Column Resizing** | No | **Drag divider + double-click reset** |
-| **Built-in Natural Sorting** | Manual external wiring | **Cached `O(N log N)` (`tristate` & `toggle`)** |
+| **Built-in Natural Sorting** | Manual external wiring | **Cached `O(N log N)` (`tristate`, `toggle` + clear button)** |
 | **Multi-Select (`Shift` / `Cmd` / `Ctrl`)** | Basic row callback only | **Single, Multi, Range & `Cmd/Ctrl+A`** |
 | **Keyboard Navigation** | Minimal | **Arrows, PageUp/Down, Home/End, Enter** |
 | **Unbounded Parent (`Column`) Safety** | Manual scroll wrappers required | **Automatic constraint resolution** |
@@ -54,7 +54,7 @@ Flutter's built-in `DataTable` instantiates every cell eagerly in a single `Rend
 
 ```yaml
 dependencies:
-  dense_table: ^1.3.0
+  dense_table: ^1.4.0
 ```
 
 ---

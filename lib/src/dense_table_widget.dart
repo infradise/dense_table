@@ -57,6 +57,8 @@ class DenseTable extends StatefulWidget {
     this.showCheckboxColumn = false,
     this.enableSorting = true,
     this.sortCycle = DenseSortCycle.tristate,
+    this.showSortClearButton = false,
+    this.clearSortSemanticLabel = 'Clear sort',
     this.sortIconBuilder,
     this.rowSpanBuilder,
     this.editTrigger = DenseEditTrigger.doubleTap,
@@ -114,6 +116,8 @@ class DenseTable extends StatefulWidget {
     this.showCheckboxColumn = false,
     this.enableSorting = true,
     this.sortCycle = DenseSortCycle.tristate,
+    this.showSortClearButton = false,
+    this.clearSortSemanticLabel = 'Clear sort',
     this.sortIconBuilder,
     this.rowSpanBuilder,
     this.editTrigger = DenseEditTrigger.doubleTap,
@@ -202,6 +206,17 @@ class DenseTable extends StatefulWidget {
 
   /// Sort state cycle applied when clicking a sortable column header.
   final DenseSortCycle sortCycle;
+
+  /// Whether the actively sorted column header shows a small `x` button that
+  /// clears sorting (returns the table to its original row order).
+  ///
+  /// Useful with [DenseSortCycle.toggle], whose header clicks never leave the
+  /// sorted state. The button is not shown for columns using a custom
+  /// [DenseColumn.headerBuilder]; call [DenseTableController.clearSort] there.
+  final bool showSortClearButton;
+
+  /// Accessibility label announced for the [showSortClearButton] button.
+  final String clearSortSemanticLabel;
 
   /// Optional builder for custom sort indicator widgets (`null` = unsorted).
   final DenseSortIconBuilder? sortIconBuilder;
@@ -933,6 +948,15 @@ class _DenseTableState extends State<DenseTable> {
     });
     _controller.setColumnWidth(columnIndex, initial);
     widget.onColumnResized?.call(columnIndex, initial);
+  }
+
+  void _onClearSortTap() {
+    if (_controller.isEditing) {
+      if (!_commitEditingCell(restoreTableFocus: false)) {
+        return;
+      }
+    }
+    _controller.clearSort();
   }
 
   void _onHeaderSortTap(int columnIndex) {
@@ -2103,6 +2127,31 @@ class _DenseTableState extends State<DenseTable> {
             Flexible(child: labelContent),
             SizedBox(width: style.sortIconInline ? 3.0 : 4.0),
             indicatorWidget,
+            if (widget.showSortClearButton && sortDirection != null)
+              Semantics(
+                button: true,
+                label: widget.clearSortSemanticLabel,
+                child: MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: GestureDetector(
+                    key: ValueKey<String>('dense_clear_sort_$columnIndex'),
+                    behavior: HitTestBehavior.opaque,
+                    onTap: _onClearSortTap,
+                    child: SizedBox(
+                      width: 16.0,
+                      height: 16.0,
+                      child: Center(
+                        child: CustomPaint(
+                          size: const Size(7.0, 7.0),
+                          painter: _DenseClearSortPainter(
+                            color: style.activeSortIconColor,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
           ],
         );
       }
@@ -3158,6 +3207,29 @@ class _DenseUnsortedIconPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _DenseUnsortedIconPainter oldDelegate) =>
+      oldDelegate.color != color;
+}
+
+class _DenseClearSortPainter extends CustomPainter {
+  const _DenseClearSortPainter({required this.color});
+
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4
+      ..strokeCap = StrokeCap.round
+      ..isAntiAlias = true;
+    canvas
+      ..drawLine(Offset.zero, Offset(size.width, size.height), paint)
+      ..drawLine(Offset(size.width, 0), Offset(0, size.height), paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _DenseClearSortPainter oldDelegate) =>
       oldDelegate.color != color;
 }
 

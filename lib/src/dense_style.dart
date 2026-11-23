@@ -58,6 +58,9 @@ class DenseStyle {
     this.editingSelectionColor = const Color(0x663574F0),
     this.dirtyCellIndicatorColor = const Color(0xFFE5A50A),
     this.dirtyCellIndicatorSize = 5.0,
+    this.pinnedColumnDividerColor,
+    this.pinnedColumnShadowColor = const Color(0x4D000000),
+    this.pinnedColumnShadowWidth = 6.0,
   })  : assert(rowHeight > 0, 'rowHeight must be strictly positive.'),
         assert(headerHeight > 0, 'headerHeight must be strictly positive.'),
         assert(minColumnWidth >= 16.0, 'minColumnWidth must be >= 16.0.'),
@@ -68,6 +71,10 @@ class DenseStyle {
         assert(
           dirtyCellIndicatorSize >= 0.0,
           'dirtyCellIndicatorSize must be non-negative.',
+        ),
+        assert(
+          pinnedColumnShadowWidth >= 0.0,
+          'pinnedColumnShadowWidth must be non-negative.',
         );
 
   /// Creates the default dark IDE [DenseStyle] with optional overrides.
@@ -121,6 +128,9 @@ class DenseStyle {
     this.editingSelectionColor = const Color(0x663574F0),
     this.dirtyCellIndicatorColor = const Color(0xFFE5A50A),
     this.dirtyCellIndicatorSize = 5.0,
+    this.pinnedColumnDividerColor,
+    this.pinnedColumnShadowColor = const Color(0x4D000000),
+    this.pinnedColumnShadowWidth = 6.0,
   })  : assert(rowHeight > 0, 'rowHeight must be strictly positive.'),
         assert(headerHeight > 0, 'headerHeight must be strictly positive.'),
         assert(minColumnWidth >= 16.0, 'minColumnWidth must be >= 16.0.'),
@@ -131,6 +141,10 @@ class DenseStyle {
         assert(
           dirtyCellIndicatorSize >= 0.0,
           'dirtyCellIndicatorSize must be non-negative.',
+        ),
+        assert(
+          pinnedColumnShadowWidth >= 0.0,
+          'pinnedColumnShadowWidth must be non-negative.',
         );
 
   /// Creates a crisp light-theme [DenseStyle] for bright desktop and web UIs.
@@ -184,6 +198,9 @@ class DenseStyle {
     this.editingSelectionColor = const Color(0x4D2563EB),
     this.dirtyCellIndicatorColor = const Color(0xFFD97706),
     this.dirtyCellIndicatorSize = 5.0,
+    this.pinnedColumnDividerColor,
+    this.pinnedColumnShadowColor = const Color(0x1F000000),
+    this.pinnedColumnShadowWidth = 6.0,
   })  : assert(rowHeight > 0, 'rowHeight must be strictly positive.'),
         assert(headerHeight > 0, 'headerHeight must be strictly positive.'),
         assert(minColumnWidth >= 16.0, 'minColumnWidth must be >= 16.0.'),
@@ -194,6 +211,10 @@ class DenseStyle {
         assert(
           dirtyCellIndicatorSize >= 0.0,
           'dirtyCellIndicatorSize must be non-negative.',
+        ),
+        assert(
+          pinnedColumnShadowWidth >= 0.0,
+          'pinnedColumnShadowWidth must be non-negative.',
         );
 
   /// Fixed height in logical pixels for every data row (`O(1)` extent).
@@ -332,6 +353,20 @@ class DenseStyle {
   /// (`0.0` hides the indicator).
   final double dirtyCellIndicatorSize;
 
+  /// Optional divider color drawn along the trailing edge separating pinned
+  /// (frozen) leading columns from horizontally scrollable columns
+  /// (defaults to [borderColor]).
+  final Color? pinnedColumnDividerColor;
+
+  /// Starting color of the horizontal elevation shadow cast along the trailing
+  /// edge of pinned (frozen) leading columns when scrolled horizontally.
+  final Color pinnedColumnShadowColor;
+
+  /// Width in logical pixels of the horizontal elevation shadow cast from
+  /// pinned (frozen) leading columns when scrolled horizontally
+  /// (`0.0` hides the shadow).
+  final double pinnedColumnShadowWidth;
+
   /// Returns a copy of this [DenseStyle] with the specified fields replaced.
   DenseStyle copyWith({
     double? rowHeight,
@@ -376,6 +411,9 @@ class DenseStyle {
     Color? editingSelectionColor,
     Color? dirtyCellIndicatorColor,
     double? dirtyCellIndicatorSize,
+    Color? pinnedColumnDividerColor,
+    Color? pinnedColumnShadowColor,
+    double? pinnedColumnShadowWidth,
   }) {
     return DenseStyle(
       rowHeight: rowHeight ?? this.rowHeight,
@@ -436,6 +474,12 @@ class DenseStyle {
           dirtyCellIndicatorColor ?? this.dirtyCellIndicatorColor,
       dirtyCellIndicatorSize:
           dirtyCellIndicatorSize ?? this.dirtyCellIndicatorSize,
+      pinnedColumnDividerColor:
+          pinnedColumnDividerColor ?? this.pinnedColumnDividerColor,
+      pinnedColumnShadowColor:
+          pinnedColumnShadowColor ?? this.pinnedColumnShadowColor,
+      pinnedColumnShadowWidth:
+          pinnedColumnShadowWidth ?? this.pinnedColumnShadowWidth,
     );
   }
 
@@ -486,7 +530,10 @@ class DenseStyle {
         other.editingCursorColor == editingCursorColor &&
         other.editingSelectionColor == editingSelectionColor &&
         other.dirtyCellIndicatorColor == dirtyCellIndicatorColor &&
-        other.dirtyCellIndicatorSize == dirtyCellIndicatorSize;
+        other.dirtyCellIndicatorSize == dirtyCellIndicatorSize &&
+        other.pinnedColumnDividerColor == pinnedColumnDividerColor &&
+        other.pinnedColumnShadowColor == pinnedColumnShadowColor &&
+        other.pinnedColumnShadowWidth == pinnedColumnShadowWidth;
   }
 
   @override
@@ -533,5 +580,8 @@ class DenseStyle {
         editingSelectionColor,
         dirtyCellIndicatorColor,
         dirtyCellIndicatorSize,
+        pinnedColumnDividerColor,
+        pinnedColumnShadowColor,
+        pinnedColumnShadowWidth,
       ]);
 }

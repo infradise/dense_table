@@ -19,16 +19,30 @@ class _DenseTableDemoAppState extends State<DenseTableDemoApp> {
   int _baseRowCount = 100000;
   String? _statusFilter;
   bool _darkMode = true;
+  bool _freezeLeading = true;
+  bool _pinActions = true;
+  bool _showRegionColumn = true;
   Object? _lastActivatedPodId;
+  Object? _lastInspectedPodId;
+  Object? _lastSecondaryTappedPodId;
+  int? _lastCopiedRowCount;
+  int? _lastCopiedColumnCount;
 
   late List<int> _filteredSourceIndices = _computeFilteredIndices();
 
   static const List<String> _namespaces = <String>[
     'prod-core',
-    'data-redis',
+    'data-cache',
     'edge-gateway',
     'telemetry',
     'auth-system',
+  ];
+
+  static const List<String> _regions = <String>[
+    'us-east-1',
+    'us-west-2',
+    'eu-central-1',
+    'ap-northeast-1',
   ];
 
   static const List<String> _statuses = <String>[
@@ -37,6 +51,15 @@ class _DenseTableDemoAppState extends State<DenseTableDemoApp> {
     'Running',
     'Pending',
     'Degraded',
+  ];
+
+  static const List<String> _nodes = <String>[
+    'node-pool-01',
+    'node-pool-02',
+    'node-pool-03',
+    'node-pool-04',
+    'node-pool-05',
+    'node-pool-06',
   ];
 
   @override
@@ -87,14 +110,53 @@ class _DenseTableDemoAppState extends State<DenseTableDemoApp> {
       case 2:
         return _podIdForSource(sourceRow);
       case 3:
-        return _statuses[sourceRow % _statuses.length];
+        return _regions[sourceRow % _regions.length];
       case 4:
-        return ((sourceRow * 17) % 950) / 10.0;
+        return _statuses[sourceRow % _statuses.length];
       case 5:
+        return ((sourceRow * 17) % 950) / 10.0;
+      case 6:
         return 64 + ((sourceRow * 31) % 2048);
+      case 7:
+        return _nodes[sourceRow % _nodes.length];
       default:
         return '';
     }
+  }
+
+  String _buildStatusLine(int visibleCount) {
+    final sort = _controller.sortState;
+    final sortLabel = sort == null
+        ? 'Unsorted'
+        : 'Col #${sort.columnIndex} (${sort.direction.name})';
+    final anchorLabel = _controller.anchorRowId ?? 'None';
+    final segments = <String>[
+      'Dataset: $visibleCount rows',
+      'Selected: ${_controller.selectedCount} '
+          '(IDs: ${_controller.totalSelectedIdCount})',
+      'Edited: ${_controller.totalDirtyCellCount}',
+      'Anchor: $anchorLabel',
+      'Sort: $sortLabel',
+      'Frozen: ${_freezeLeading ? 2 : 0}',
+      'Actions: ${_pinActions ? 'Pinned' : 'Scrollable'}',
+      'Region Col: ${_showRegionColumn ? 'Visible' : 'Hidden'}',
+    ];
+    if (_lastCopiedRowCount != null && _lastCopiedColumnCount != null) {
+      final rowWord = _lastCopiedRowCount == 1 ? 'row' : 'rows';
+      segments.add(
+        'Copied: $_lastCopiedRowCount $rowWord ($_lastCopiedColumnCount cols)',
+      );
+    }
+    if (_lastSecondaryTappedPodId != null) {
+      segments.add('Right-click: $_lastSecondaryTappedPodId');
+    }
+    if (_lastInspectedPodId != null) {
+      segments.add('Inspected: $_lastInspectedPodId');
+    }
+    if (_lastActivatedPodId != null) {
+      segments.add('Activated: $_lastActivatedPodId');
+    }
+    return segments.join(' | ');
   }
 
   @override
@@ -112,7 +174,7 @@ class _DenseTableDemoAppState extends State<DenseTableDemoApp> {
     final visibleCount = _filteredSourceIndices.length;
 
     return WidgetsApp(
-      title: 'DenseTable 1.4.0 Showcase',
+      title: 'DenseTable 1.5.0 Showcase',
       color: const Color(0xFF2563EB),
       debugShowCheckedModeBanner: false,
       pageRouteBuilder: <T>(RouteSettings settings, WidgetBuilder builder) {
@@ -142,7 +204,7 @@ class _DenseTableDemoAppState extends State<DenseTableDemoApp> {
                 alignment: WrapAlignment.spaceBetween,
                 children: <Widget>[
                   Text(
-                    'DenseTable 1.4.0 Showcase',
+                    'DenseTable 1.5.0 Showcase',
                     style: TextStyle(
                       color: fgColor,
                       fontSize: 15.0,
@@ -196,6 +258,33 @@ class _DenseTableDemoAppState extends State<DenseTableDemoApp> {
                         onTap: () => _updateDataset(statusFilter: 'Degraded'),
                       ),
                       _ToolbarButton(
+                        label: 'Frozen Cols',
+                        active: _freezeLeading,
+                        darkMode: _darkMode,
+                        onTap: () =>
+                            setState(() => _freezeLeading = !_freezeLeading),
+                      ),
+                      _ToolbarButton(
+                        label: 'Pin Actions',
+                        active: _pinActions,
+                        darkMode: _darkMode,
+                        onTap: () => setState(() => _pinActions = !_pinActions),
+                      ),
+                      _ToolbarButton(
+                        label:
+                            _showRegionColumn ? 'Hide Column' : 'Show Column',
+                        active: !_showRegionColumn,
+                        darkMode: _darkMode,
+                        onTap: () => setState(
+                          () => _showRegionColumn = !_showRegionColumn,
+                        ),
+                      ),
+                      _ToolbarButton(
+                        label: 'Clear Sort',
+                        darkMode: _darkMode,
+                        onTap: _controller.clearSort,
+                      ),
+                      _ToolbarButton(
                         label: 'Jump Bottom',
                         darkMode: _darkMode,
                         onTap: () {
@@ -233,19 +322,8 @@ class _DenseTableDemoAppState extends State<DenseTableDemoApp> {
                     AnimatedBuilder(
                       animation: _controller,
                       builder: (context, _) {
-                        final sort = _controller.sortState;
-                        final sortLabel = sort == null
-                            ? 'Unsorted'
-                            : 'Col #${sort.columnIndex} (${sort.direction.name})';
-                        final anchorLabel = _controller.anchorRowId ?? 'None';
                         return Text(
-                          'Dataset: $visibleCount rows  •  '
-                          'Selected: ${_controller.selectedCount} '
-                          '(IDs: ${_controller.totalSelectedIdCount})  •  '
-                          'Edited: ${_controller.totalDirtyCellCount}  •  '
-                          'Anchor: $anchorLabel  •  '
-                          'Sort: $sortLabel'
-                          '${_lastActivatedPodId != null ? '  •  Activated: $_lastActivatedPodId' : ''}',
+                          _buildStatusLine(visibleCount),
                           style: TextStyle(
                             color: fgColor,
                             fontSize: 13.0,
@@ -263,6 +341,38 @@ class _DenseTableDemoAppState extends State<DenseTableDemoApp> {
                         showCheckboxColumn: true,
                         sortCycle: DenseSortCycle.toggle,
                         showSortClearButton: true,
+                        frozenColumnCount: _freezeLeading ? 2 : 0,
+                        pinActionsColumn: _pinActions,
+                        actionsHeader: 'Actions',
+                        actionsWidth: 96.0,
+                        actionsAlignment: Alignment.centerRight,
+                        actionsCellPadding: const EdgeInsets.symmetric(
+                          horizontal: 8.0,
+                        ),
+                        rowActionsBuilder: (context, rowIndex) {
+                          return _RowActionButton(
+                            label: 'Inspect',
+                            darkMode: _darkMode,
+                            onTap: () {
+                              setState(
+                                () => _lastInspectedPodId = _rowId(rowIndex),
+                              );
+                            },
+                          );
+                        },
+                        enableCopyShortcut: true,
+                        onCopy: (event) {
+                          setState(() {
+                            _lastCopiedRowCount = event.rowIndices.length;
+                            _lastCopiedColumnCount = event.columnIndices.length;
+                          });
+                        },
+                        selectOnSecondaryTap: true,
+                        onRowSecondaryTapDown: (rowIndex, _) {
+                          setState(
+                            () => _lastSecondaryTappedPodId = _rowId(rowIndex),
+                          );
+                        },
                         style: style,
                         rowCount: visibleCount,
                         rowIdBuilder: _rowId,
@@ -276,18 +386,25 @@ class _DenseTableDemoAppState extends State<DenseTableDemoApp> {
                         columns: <DenseColumn>[
                           const DenseColumn(
                             title: 'ID',
-                            initialWidth: 80.0,
+                            initialWidth: 72.0,
                             alignment: Alignment.centerRight,
+                            cellPadding: EdgeInsets.symmetric(horizontal: 6.0),
                           ),
                           const DenseColumn(
                             title: 'Namespace',
-                            initialWidth: 140.0,
+                            initialWidth: 130.0,
                             editable: true,
                           ),
                           const DenseColumn(
                             title: 'Workload Name',
-                            initialWidth: 220.0,
+                            initialWidth: 210.0,
                             flex: 1.0,
+                            editable: true,
+                          ),
+                          DenseColumn(
+                            title: 'Region',
+                            initialWidth: 120.0,
+                            visible: _showRegionColumn,
                             editable: true,
                           ),
                           const DenseColumn(
@@ -321,17 +438,21 @@ class _DenseTableDemoAppState extends State<DenseTableDemoApp> {
                               return null;
                             },
                           ),
+                          const DenseColumn(
+                            title: 'Node',
+                            initialWidth: 140.0,
+                          ),
                         ],
                         cellBuilder: (context, row, col) {
                           final val = _rawValue(row, col);
-                          if (col == 4) {
+                          if (col == 5) {
                             return Text(
                               '${(val as double).toStringAsFixed(1)} ms',
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                             );
                           }
-                          if (col == 5) {
+                          if (col == 6) {
                             return Text(
                               '$val MiB',
                               maxLines: 1,
@@ -395,6 +516,52 @@ class _ToolbarButton extends StatelessWidget {
               color: fg,
               fontSize: 12.0,
               fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _RowActionButton extends StatelessWidget {
+  const _RowActionButton({
+    required this.label,
+    required this.darkMode,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool darkMode;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final bg = darkMode ? const Color(0xFF32353B) : const Color(0xFFE4E7EC);
+    final border = darkMode ? const Color(0xFF4E5155) : const Color(0xFFD0D5DD);
+    final fg = darkMode ? const Color(0xFFE4E6EB) : const Color(0xFF1F2328);
+
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 2.0),
+          decoration: BoxDecoration(
+            color: bg,
+            border: Border.all(color: border),
+            borderRadius: const BorderRadius.all(Radius.circular(3.0)),
+          ),
+          child: Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: fg,
+              fontSize: 11.0,
+              fontWeight: FontWeight.w600,
+              height: 1.2,
             ),
           ),
         ),

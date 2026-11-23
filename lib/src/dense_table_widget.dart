@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
@@ -70,17 +71,26 @@ class DenseTable extends StatefulWidget {
     this.commitOnTapOutside = true,
     this.enableColumnResize = true,
     this.enableKeyboardNavigation = true,
+    this.enableCopyShortcut = true,
+    this.copyValueBuilder,
+    this.onCopy,
     this.autofocus = false,
     this.focusNode,
     this.expandLastColumn = true,
     this.shrinkWrap = false,
     this.fallbackHeight = 400.0,
     this.maxShrinkWrapHeight = 1200.0,
+    this.frozenColumnCount = 0,
+    this.pinActionsColumn = false,
     this.tailActions = false,
     this.actionsHeader = 'Actions',
     this.actionsWidth = 100.0,
+    this.actionsAlignment = Alignment.centerLeft,
+    this.actionsHeaderChild,
+    this.actionsCellPadding,
     this.actions,
     this.emptyPlaceholder,
+    this.selectOnSecondaryTap = false,
     this.onRowTap,
     this.onRowDoubleTap,
     this.onRowSecondaryTapDown,
@@ -89,7 +99,11 @@ class DenseTable extends StatefulWidget {
     this.onSelectedIdsChanged,
     this.onSortChanged,
     this.onColumnResized,
-  })  : _rowCount = null,
+  })  : assert(
+          frozenColumnCount >= 0,
+          'frozenColumnCount must be non-negative.',
+        ),
+        _rowCount = null,
         _cellBuilder = null,
         _rawCellValue = null,
         _indexedActions = null;
@@ -129,16 +143,25 @@ class DenseTable extends StatefulWidget {
     this.commitOnTapOutside = true,
     this.enableColumnResize = true,
     this.enableKeyboardNavigation = true,
+    this.enableCopyShortcut = true,
+    this.copyValueBuilder,
+    this.onCopy,
     this.autofocus = false,
     this.focusNode,
     this.expandLastColumn = true,
     this.shrinkWrap = false,
     this.fallbackHeight = 400.0,
     this.maxShrinkWrapHeight = 1200.0,
+    this.frozenColumnCount = 0,
+    this.pinActionsColumn = false,
     this.actionsHeader = 'Actions',
     this.actionsWidth = 100.0,
+    this.actionsAlignment = Alignment.centerLeft,
+    this.actionsHeaderChild,
+    this.actionsCellPadding,
     DenseIndexedRowActionsBuilder? rowActionsBuilder,
     this.emptyPlaceholder,
+    this.selectOnSecondaryTap = false,
     this.onRowTap,
     this.onRowDoubleTap,
     this.onRowSecondaryTapDown,
@@ -148,6 +171,10 @@ class DenseTable extends StatefulWidget {
     this.onSortChanged,
     this.onColumnResized,
   })  : assert(rowCount >= 0, 'rowCount must be non-negative.'),
+        assert(
+          frozenColumnCount >= 0,
+          'frozenColumnCount must be non-negative.',
+        ),
         headers = null,
         data = null,
         columnWidths = const <int, double>{},
@@ -258,6 +285,18 @@ class DenseTable extends StatefulWidget {
   /// Whether arrow/page/home/end/enter/space shortcuts navigate rows.
   final bool enableKeyboardNavigation;
 
+  /// Whether `Ctrl`/`Cmd`+`C` copies selected rows (or the focused row when no
+  /// row is selected) to the system clipboard as tab-separated values (`TSV`).
+  final bool enableCopyShortcut;
+
+  /// Optional extractor returning the plain-text string copied for
+  /// `(rowIndex, columnIndex)` during `Ctrl`/`Cmd`+`C` clipboard copy.
+  final DenseCopyValueBuilder? copyValueBuilder;
+
+  /// Called with a [DenseCopyEvent] after [DenseTable] copies cells to the
+  /// system clipboard via `Ctrl`/`Cmd`+`C`.
+  final DenseCopyCallback? onCopy;
+
   /// Whether this table requests keyboard focus automatically on mount.
   final bool autofocus;
 
@@ -281,6 +320,19 @@ class DenseTable extends StatefulWidget {
   /// vertical parent so large datasets remain virtualized instead of freezing.
   final double maxShrinkWrapHeight;
 
+  /// Number of leading data columns pinned to the left edge when the table
+  /// overflows horizontally.
+  ///
+  /// When greater than `0`, the leading selection checkbox column (if shown) is
+  /// pinned alongside the leading visible columns. Pinning degrades smoothly to
+  /// flat scrolling whenever the table fits within the viewport or pinned bands
+  /// would leave too little horizontal space for scrollable columns.
+  final int frozenColumnCount;
+
+  /// Whether the trailing actions column remains pinned to the right edge when
+  /// the table overflows horizontally.
+  final bool pinActionsColumn;
+
   /// Whether a trailing actions column is shown when [actions] is provided.
   final bool tailActions;
 
@@ -290,11 +342,27 @@ class DenseTable extends StatefulWidget {
   /// Width in logical pixels for the trailing actions column.
   final double actionsWidth;
 
+  /// Alignment applied to the trailing actions header and body cells.
+  final AlignmentGeometry actionsAlignment;
+
+  /// Optional custom widget rendered in place of [actionsHeader] inside the
+  /// trailing actions header cell.
+  final Widget? actionsHeaderChild;
+
+  /// Optional padding overriding [DenseStyle.cellPadding] for the trailing
+  /// actions header and body cells.
+  final EdgeInsetsGeometry? actionsCellPadding;
+
   /// Optional builder for trailing row actions in the matrix constructor.
   final DenseRowActionsBuilder? actions;
 
   /// Optional widget displayed in the table body when there are zero rows.
   final Widget? emptyPlaceholder;
+
+  /// Whether secondary (right-click) taps automatically select the target row
+  /// (or focus it while preserving an existing multi-selection when already
+  /// selected) before invoking [onRowSecondaryTapDown].
+  final bool selectOnSecondaryTap;
 
   /// Called immediately (`0ms` delay) on primary single click of a row.
   final ValueChanged<int>? onRowTap;
@@ -360,6 +428,7 @@ class _DenseTableState extends State<DenseTable> {
   bool _postFrameSelectionReportScheduled = false;
 
   bool _isSyncingHorizontal = false;
+  bool _postFrameHeaderSyncScheduled = false;
   double _lastBodyViewportHeight = 240.0;
   double _lastViewportWidth = 0.0;
   _EffectiveColumnLayout? _lastComputedLayout;
@@ -423,6 +492,7 @@ class _DenseTableState extends State<DenseTable> {
     _focusNode.addListener(_handleFocusChange);
     _editFocusNode.addListener(_handleFocusChange);
     _rebuildSortIndexIfNeeded(force: true);
+    _scheduleHorizontalHeaderSync();
   }
 
   @override
@@ -434,7 +504,7 @@ class _DenseTableState extends State<DenseTable> {
       (oldWidget.controller ?? _internalController)?.removeListener(
         _handleControllerChanged,
       );
-      (oldWidget.controller ?? _internalController)?.detachTableDelegates();
+      (oldWidget.controller ?? _internalController)?.detachTableDelegates(this);
       if (widget.controller == null && _internalController == null) {
         _internalController = DenseTableController();
       } else if (widget.controller != null && _internalController != null) {
@@ -469,6 +539,7 @@ class _DenseTableState extends State<DenseTable> {
         _internalBodyHorizontalController = null;
       }
       _bodyHorizontalController.addListener(_syncFromBodyToHeader);
+      _scheduleHorizontalHeaderSync();
     }
 
     if (oldWidget.focusNode != widget.focusNode) {
@@ -507,6 +578,7 @@ class _DenseTableState extends State<DenseTable> {
     final activeEdit = _controller.editingCell;
     if (activeEdit != null &&
         !_isCellEditable(activeEdit.rowIndex, activeEdit.columnIndex)) {
+      final hadEditFocus = _editFocusNode.hasFocus;
       _controller.syncEditingSession(
         coord: null,
         rowId: null,
@@ -514,6 +586,13 @@ class _DenseTableState extends State<DenseTable> {
         notify: false,
       );
       columnsReconciled = true;
+      if (hadEditFocus && widget.enableKeyboardNavigation) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && !_controller.isEditing) {
+            _focusNode.requestFocus();
+          }
+        });
+      }
     }
     if (columnsReconciled) {
       _scheduleSelectionReportIfChanged(notifyControllerPostFrame: true);
@@ -651,7 +730,7 @@ class _DenseTableState extends State<DenseTable> {
   @override
   void dispose() {
     _controller.removeListener(_handleControllerChanged);
-    _controller.detachTableDelegates();
+    _controller.detachTableDelegates(this);
     _bodyHorizontalController.removeListener(_syncFromBodyToHeader);
     _headerHorizontalController
       ..removeListener(_syncFromHeaderToBody)
@@ -683,6 +762,7 @@ class _DenseTableState extends State<DenseTable> {
         restoreTableFocus: true,
       ),
       cancelEditing: () => _cancelEditingCell(restoreTableFocus: true),
+      owner: this,
     );
     for (var i = 0; i < _baseColumnWidths.length; i++) {
       final override = controller.columnWidth(i);
@@ -698,6 +778,30 @@ class _DenseTableState extends State<DenseTable> {
   void _attachHorizontalSync() {
     _bodyHorizontalController.addListener(_syncFromBodyToHeader);
     _headerHorizontalController.addListener(_syncFromHeaderToBody);
+  }
+
+  void _scheduleHorizontalHeaderSync() {
+    if (_postFrameHeaderSyncScheduled) {
+      return;
+    }
+    _postFrameHeaderSyncScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _postFrameHeaderSyncScheduled = false;
+      if (mounted) {
+        _syncFromBodyToHeader();
+      }
+    });
+  }
+
+  double _clampedHorizontalOffset(ScrollController ctrl, double maxExtent) {
+    if (!ctrl.hasClients || maxExtent <= 0.0) {
+      return 0.0;
+    }
+    final offset = ctrl.offset;
+    if (!offset.isFinite) {
+      return 0.0;
+    }
+    return offset.clamp(0.0, maxExtent);
   }
 
   void _syncFromBodyToHeader() {
@@ -805,7 +909,8 @@ class _DenseTableState extends State<DenseTable> {
     return width.clamp(minW, maxW);
   }
 
-  bool get _hasEditableColumns => _resolvedColumns.any((col) => col.editable);
+  bool get _hasEditableColumns =>
+      _resolvedColumns.any((col) => col.visible && col.editable);
 
   bool get _canSortClientSide =>
       widget.data != null || widget._rawCellValue != null;
@@ -922,12 +1027,7 @@ class _DenseTableState extends State<DenseTable> {
     });
     _controller.setColumnWidth(columnIndex, next);
     widget.onColumnResized?.call(columnIndex, next);
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) {
-        _syncFromBodyToHeader();
-      }
-    });
+    _scheduleHorizontalHeaderSync();
   }
 
   void _onResetColumnWidth(int columnIndex) {
@@ -948,6 +1048,7 @@ class _DenseTableState extends State<DenseTable> {
     });
     _controller.setColumnWidth(columnIndex, initial);
     widget.onColumnResized?.call(columnIndex, initial);
+    _scheduleHorizontalHeaderSync();
   }
 
   void _onClearSortTap() {
@@ -976,12 +1077,63 @@ class _DenseTableState extends State<DenseTable> {
     );
   }
 
+  List<int> _visibleColumnIndices() => <int>[
+        for (var i = 0; i < _resolvedColumns.length; i++)
+          if (_resolvedColumns[i].visible) i,
+      ];
+
+  int? _visibleFocusedColumn() {
+    final fc = _controller.focusedColumn;
+    if (fc == null ||
+        fc < 0 ||
+        fc >= _resolvedColumns.length ||
+        !_resolvedColumns[fc].visible) {
+      return null;
+    }
+    return fc;
+  }
+
   int? _resolveColumnAtDx(double? localDx) {
     final layout = _lastComputedLayout;
     if (localDx == null || layout == null) {
       return null;
     }
-    for (var i = 0; i < layout.columnWidths.length; i++) {
+    if (layout.hasPinnedBands) {
+      final s = _clampedHorizontalOffset(
+        _bodyHorizontalController,
+        layout.maxHorizontalScrollExtent,
+      );
+      final viewX = localDx - s;
+      if (layout.hasLeadingPin &&
+          viewX >= 0.0 &&
+          viewX < layout.leadingPinnedWidth) {
+        if (layout.isCheckboxPinned && viewX < layout.checkboxWidth) {
+          return null;
+        }
+        for (final i in layout.leadingColumnIndices) {
+          final start = layout.columnOffsets[i];
+          final end = start + layout.columnWidths[i];
+          if (viewX >= start && viewX < end) {
+            return i;
+          }
+        }
+        return null;
+      }
+      if (layout.hasTrailingPin &&
+          viewX >= layout.viewportWidth - layout.trailingPinnedWidth &&
+          viewX <= layout.viewportWidth) {
+        return null;
+      }
+      for (final i in layout.scrollableColumnIndices) {
+        final start = layout.columnOffsets[i];
+        final end = start + layout.columnWidths[i];
+        if (localDx >= start && localDx < end) {
+          return i;
+        }
+      }
+      return null;
+    }
+    for (final i in layout.visibleColumnIndices) {
       final start = layout.columnOffsets[i];
       final end = start + layout.columnWidths[i];
       if (localDx >= start && localDx < end) {
@@ -1011,7 +1163,8 @@ class _DenseTableState extends State<DenseTable> {
         columnIndex >= _resolvedColumns.length) {
       return false;
     }
-    if (!_resolvedColumns[columnIndex].editable) {
+    final col = _resolvedColumns[columnIndex];
+    if (!col.visible || !col.editable) {
       return false;
     }
     return widget.canEditCell?.call(originalRowIndex, columnIndex) ?? true;
@@ -1511,11 +1664,136 @@ class _DenseTableState extends State<DenseTable> {
     _controller.toggleSelectAllVisible(_totalRowCount);
   }
 
-  KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
-    if (_controller.isEditing) {
+  void _handleRowSecondaryTapDown(
+    int originalIndex,
+    TapDownDetails details,
+  ) {
+    if (widget.selectOnSecondaryTap &&
+        widget.selectionMode != DenseSelectionMode.none) {
+      if (!_controller.isRowSelected(originalIndex)) {
+        _controller.selectRow(originalIndex);
+      } else {
+        _controller.setFocusedRow(originalIndex);
+      }
+    }
+    widget.onRowSecondaryTapDown?.call(originalIndex, details);
+  }
+
+  String _resolveCopyCellText(int originalRowIndex, int columnIndex) {
+    final copyBuilder = widget.copyValueBuilder;
+    if (copyBuilder != null) {
+      return copyBuilder(originalRowIndex, columnIndex);
+    }
+    if (widget.trackDirtyCells && widget.displayDirtyText) {
+      final staged = _controller.dirtyTextAt(originalRowIndex, columnIndex);
+      if (staged != null) {
+        return staged;
+      }
+    }
+    final editGetter = widget.editValueGetter;
+    if (editGetter != null) {
+      return editGetter(originalRowIndex, columnIndex);
+    }
+    final rawGetter = widget._rawCellValue;
+    if (rawGetter != null) {
+      return rawGetter(originalRowIndex, columnIndex)?.toString() ?? '';
+    }
+    final matrix = widget.data;
+    if (matrix != null && originalRowIndex < matrix.length) {
+      final row = matrix[originalRowIndex];
+      if (columnIndex < row.length) {
+        final Object? cell = row[columnIndex];
+        if (cell is Widget) {
+          return '';
+        }
+        return cell?.toString() ?? '';
+      }
+    }
+    return '';
+  }
+
+  static void _writeTsvCell(StringBuffer buffer, String value) {
+    final needsQuoting =
+        value.contains('\t') || value.contains('\n') || value.contains('\r');
+    if (!needsQuoting) {
+      buffer.write(value);
+      return;
+    }
+    buffer
+      ..write('"')
+      ..write(value.replaceAll('"', '""'))
+      ..write('"');
+  }
+
+  Future<void> _writeClipboard(String text) async {
+    try {
+      await Clipboard.setData(ClipboardData(text: text));
+    } on MissingPluginException {
+      return;
+    } on PlatformException {
+      return;
+    }
+  }
+
+  KeyEventResult _handleCopyShortcut() {
+    final List<int> targetRows;
+    if (_controller.selectedRows.isNotEmpty) {
+      final rows = <int>[
+        for (final r in _controller.selectedRows)
+          if (_originalToVisualIndex(r) != null) r,
+      ];
+      if (rows.isEmpty) {
+        return KeyEventResult.ignored;
+      }
+      rows.sort(
+        (a, b) =>
+            _originalToVisualIndex(a)!.compareTo(_originalToVisualIndex(b)!),
+      );
+      targetRows = rows;
+    } else {
+      final focused = _controller.focusedRow;
+      if (focused == null || _originalToVisualIndex(focused) == null) {
+        return KeyEventResult.ignored;
+      }
+      targetRows = <int>[focused];
+    }
+
+    final visibleCols = _visibleColumnIndices();
+    if (visibleCols.isEmpty) {
       return KeyEventResult.ignored;
     }
-    if (!widget.enableKeyboardNavigation) {
+
+    final buffer = StringBuffer();
+    for (var rIdx = 0; rIdx < targetRows.length; rIdx++) {
+      if (rIdx > 0) {
+        buffer.write('\n');
+      }
+      final origRow = targetRows[rIdx];
+      for (var cIdx = 0; cIdx < visibleCols.length; cIdx++) {
+        if (cIdx > 0) {
+          buffer.write('\t');
+        }
+        _writeTsvCell(
+          buffer,
+          _resolveCopyCellText(origRow, visibleCols[cIdx]),
+        );
+      }
+    }
+    final tsv = buffer.toString();
+
+    unawaited(_writeClipboard(tsv));
+    widget.onCopy?.call(
+      DenseCopyEvent(
+        rowIndices: List<int>.unmodifiable(targetRows),
+        columnIndices: List<int>.unmodifiable(visibleCols),
+        text: tsv,
+      ),
+    );
+    return KeyEventResult.handled;
+  }
+
+  KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
+    if (_controller.isEditing) {
       return KeyEventResult.ignored;
     }
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
@@ -1530,7 +1808,21 @@ class _DenseTableState extends State<DenseTable> {
     final key = event.logicalKey;
     final keyboard = HardwareKeyboard.instance;
     final isShift = keyboard.isShiftPressed;
+    final isAlt = keyboard.isAltPressed;
     final isAccel = keyboard.isMetaPressed || keyboard.isControlPressed;
+
+    if (widget.enableCopyShortcut &&
+        event is KeyDownEvent &&
+        isAccel &&
+        !isShift &&
+        !isAlt &&
+        key == LogicalKeyboardKey.keyC) {
+      return _handleCopyShortcut();
+    }
+
+    if (!widget.enableKeyboardNavigation) {
+      return KeyEventResult.ignored;
+    }
 
     if (isAccel &&
         key == LogicalKeyboardKey.keyA &&
@@ -1559,7 +1851,7 @@ class _DenseTableState extends State<DenseTable> {
       if (key == LogicalKeyboardKey.f2 && event is KeyDownEvent) {
         final targetOrig = currentOriginal ?? _visualToOriginalIndex(0);
         final targetCol =
-            _controller.focusedColumn ?? _firstEditableColumnForRow(targetOrig);
+            _visibleFocusedColumn() ?? _firstEditableColumnForRow(targetOrig);
         if (targetCol != null && _isCellEditable(targetOrig, targetCol)) {
           _startEditingCell(targetOrig, targetCol);
           return KeyEventResult.handled;
@@ -1569,13 +1861,38 @@ class _DenseTableState extends State<DenseTable> {
       if ((key == LogicalKeyboardKey.arrowLeft ||
               key == LogicalKeyboardKey.arrowRight) &&
           !isAccel) {
-        final colCount = _resolvedColumns.length;
+        final visibleCols = _visibleColumnIndices();
+        if (visibleCols.isEmpty) {
+          return KeyEventResult.ignored;
+        }
         final baseOrig = currentOriginal ?? _visualToOriginalIndex(0);
         final baseCol = _controller.focusedColumn ??
-            (_firstEditableColumnForRow(baseOrig) ?? 0);
-        final nextCol = key == LogicalKeyboardKey.arrowRight
-            ? math.min(colCount - 1, baseCol + 1)
-            : math.max(0, baseCol - 1);
+            (_firstEditableColumnForRow(baseOrig) ?? visibleCols.first);
+        final int nextCol;
+        final pos = visibleCols.indexOf(baseCol);
+        if (pos >= 0) {
+          nextCol = key == LogicalKeyboardKey.arrowRight
+              ? visibleCols[math.min(visibleCols.length - 1, pos + 1)]
+              : visibleCols[math.max(0, pos - 1)];
+        } else if (key == LogicalKeyboardKey.arrowRight) {
+          var found = visibleCols.last;
+          for (final c in visibleCols) {
+            if (c > baseCol) {
+              found = c;
+              break;
+            }
+          }
+          nextCol = found;
+        } else {
+          var found = visibleCols.first;
+          for (var i = visibleCols.length - 1; i >= 0; i--) {
+            if (visibleCols[i] < baseCol) {
+              found = visibleCols[i];
+              break;
+            }
+          }
+          nextCol = found;
+        }
         _controller.setFocusedCell(baseOrig, nextCol, updateAnchor: true);
         _ensureColumnVisible(nextCol);
         return KeyEventResult.handled;
@@ -1612,7 +1929,7 @@ class _DenseTableState extends State<DenseTable> {
         key == LogicalKeyboardKey.numpadEnter) {
       if (currentOriginal != null) {
         if (_hasEditableColumns && event is KeyDownEvent) {
-          final targetCol = _controller.focusedColumn ??
+          final targetCol = _visibleFocusedColumn() ??
               _firstEditableColumnForRow(currentOriginal);
           if (targetCol != null &&
               _isCellEditable(currentOriginal, targetCol)) {
@@ -1743,20 +2060,27 @@ class _DenseTableState extends State<DenseTable> {
         layout == null ||
         columnIndex < 0 ||
         columnIndex >= layout.columnWidths.length ||
+        !_resolvedColumns[columnIndex].visible ||
+        layout.isColumnFrozen(columnIndex) ||
         _lastViewportWidth <= 0) {
       return;
     }
     final pos = _bodyHorizontalController.position;
     final colLeft = layout.columnOffsets[columnIndex];
     final colRight = colLeft + layout.columnWidths[columnIndex];
-    final viewLeft = pos.pixels;
-    final viewRight = viewLeft + _lastViewportWidth;
+    final leadingW = layout.leadingPinnedWidth;
+    final trailingW = layout.trailingPinnedWidth;
+    final viewLeft = pos.pixels + leadingW;
+    final viewRight = pos.pixels + _lastViewportWidth - trailingW;
 
     if (colLeft < viewLeft) {
-      _bodyHorizontalController.jumpTo(colLeft.clamp(0.0, pos.maxScrollExtent));
+      _bodyHorizontalController.jumpTo(
+        (colLeft - leadingW).clamp(0.0, pos.maxScrollExtent),
+      );
     } else if (colRight > viewRight) {
       _bodyHorizontalController.jumpTo(
-        (colRight - _lastViewportWidth).clamp(0.0, pos.maxScrollExtent),
+        (colRight - (_lastViewportWidth - trailingW))
+            .clamp(0.0, pos.maxScrollExtent),
       );
     }
   }
@@ -1766,39 +2090,46 @@ class _DenseTableState extends State<DenseTable> {
     final actionsW = _hasActionsColumn ? widget.actionsWidth : 0.0;
     final colCount = _baseColumnWidths.length;
 
+    final visibleColumnIndices = <int>[
+      for (var i = 0; i < colCount; i++)
+        if (_resolvedColumns[i].visible) i,
+    ];
+
     var baseDataW = 0.0;
-    for (var i = 0; i < colCount; i++) {
-      baseDataW += _baseColumnWidths[i];
+    final effectiveWidths = List<double>.filled(colCount, 0.0);
+    for (final i in visibleColumnIndices) {
+      final w = _baseColumnWidths[i];
+      effectiveWidths[i] = w;
+      baseDataW += w;
     }
 
     final baseTotalW = checkboxW + baseDataW + actionsW;
-    final effectiveWidths = List<double>.of(_baseColumnWidths, growable: false);
 
     if (widget.expandLastColumn &&
-        colCount > 0 &&
+        visibleColumnIndices.isNotEmpty &&
         availableViewportWidth > baseTotalW) {
       final leftover = availableViewportWidth - baseTotalW;
       var totalFlex = 0.0;
-      for (var i = 0; i < colCount; i++) {
+      for (final i in visibleColumnIndices) {
         final f = _resolvedColumns[i].flex;
         if (f != null && f > 0) {
           totalFlex += f;
         }
       }
       if (totalFlex > 0) {
-        for (var i = 0; i < colCount; i++) {
+        for (final i in visibleColumnIndices) {
           final f = _resolvedColumns[i].flex;
           if (f != null && f > 0) {
             effectiveWidths[i] += leftover * (f / totalFlex);
           }
         }
       } else {
-        effectiveWidths[colCount - 1] += leftover;
+        effectiveWidths[visibleColumnIndices.last] += leftover;
       }
     }
 
     var effectiveDataW = 0.0;
-    for (var i = 0; i < colCount; i++) {
+    for (final i in visibleColumnIndices) {
       effectiveDataW += effectiveWidths[i];
     }
     final totalTableW = math.max(
@@ -1807,34 +2138,123 @@ class _DenseTableState extends State<DenseTable> {
     );
 
     // Precompute column X offsets and vertical divider X coordinates once per
-    // layout pass.
+    // layout pass. Hidden columns stay at zero width and emit no dividers.
     final columnOffsets = List<double>.filled(colCount, 0.0);
-    final dividerCount =
-        (_showCheckboxes ? 1 : 0) + colCount + (_hasActionsColumn ? 1 : 0);
-    final dividerOffsets = List<double>.filled(dividerCount, 0.0);
+    final dividerOffsets = <double>[];
     var cursor = 0.0;
-    var dIdx = 0;
     if (_showCheckboxes) {
       cursor += checkboxW;
-      dividerOffsets[dIdx++] = cursor;
+      dividerOffsets.add(cursor);
     }
     for (var i = 0; i < colCount; i++) {
       columnOffsets[i] = cursor;
-      cursor += effectiveWidths[i];
-      dividerOffsets[dIdx++] = cursor;
+      if (_resolvedColumns[i].visible) {
+        cursor += effectiveWidths[i];
+        dividerOffsets.add(cursor);
+      }
     }
     if (_hasActionsColumn) {
       cursor += actionsW;
-      dividerOffsets[dIdx++] = cursor;
+      dividerOffsets.add(cursor);
+    }
+
+    final clampedFrozen = math.min(widget.frozenColumnCount, colCount);
+    var candLeadingW = 0.0;
+    if (clampedFrozen > 0) {
+      var frozenVisibleW = 0.0;
+      for (final i in visibleColumnIndices) {
+        if (i < clampedFrozen) {
+          frozenVisibleW += effectiveWidths[i];
+        }
+      }
+      candLeadingW = checkboxW + frozenVisibleW;
+    }
+    final candTrailingW =
+        (widget.pinActionsColumn && _hasActionsColumn) ? actionsW : 0.0;
+    final canPin = availableViewportWidth > 0.0 &&
+        totalTableW > availableViewportWidth + 0.5 &&
+        (candLeadingW > 0.0 || candTrailingW > 0.0) &&
+        (candLeadingW + candTrailingW) < availableViewportWidth * 0.85;
+
+    if (!canPin) {
+      return _EffectiveColumnLayout(
+        viewportWidth: availableViewportWidth,
+        checkboxWidth: checkboxW,
+        actionsWidth: actionsW,
+        columnOffsets: columnOffsets,
+        columnWidths: effectiveWidths,
+        dividerOffsets: dividerOffsets,
+        totalWidth: totalTableW,
+        visibleColumnIndices: visibleColumnIndices,
+        effectiveFrozenColumnCount: 0,
+        leadingPinnedWidth: 0.0,
+        trailingPinnedWidth: 0.0,
+        isCheckboxPinned: false,
+        isActionsPinned: false,
+        leadingColumnIndices: const <int>[],
+        scrollableColumnIndices: visibleColumnIndices,
+        leadingDividerOffsets: const <double>[],
+        scrollableDividerOffsets: dividerOffsets,
+      );
+    }
+
+    final effectiveFrozenColumnCount = candLeadingW > 0.0 ? clampedFrozen : 0;
+    final isCheckboxPinned = candLeadingW > 0.0 && _showCheckboxes;
+    final isActionsPinned = candTrailingW > 0.0;
+    final leadingColumnIndices = <int>[
+      for (final i in visibleColumnIndices)
+        if (i < effectiveFrozenColumnCount) i,
+    ];
+    final scrollableColumnIndices = <int>[
+      for (final i in visibleColumnIndices)
+        if (i >= effectiveFrozenColumnCount) i,
+    ];
+    final leadingDividerOffsets = <double>[];
+    final scrollableDividerOffsets = <double>[];
+    var divCursor = 0.0;
+    if (_showCheckboxes) {
+      divCursor += checkboxW;
+      if (isCheckboxPinned) {
+        if (divCursor < candLeadingW - 0.5) {
+          leadingDividerOffsets.add(divCursor);
+        }
+      } else {
+        scrollableDividerOffsets.add(divCursor);
+      }
+    }
+    for (final i in visibleColumnIndices) {
+      divCursor += effectiveWidths[i];
+      if (i < effectiveFrozenColumnCount) {
+        if (divCursor < candLeadingW - 0.5) {
+          leadingDividerOffsets.add(divCursor);
+        }
+      } else {
+        scrollableDividerOffsets.add(divCursor);
+      }
+    }
+    if (_hasActionsColumn && !isActionsPinned) {
+      divCursor += actionsW;
+      scrollableDividerOffsets.add(divCursor);
     }
 
     return _EffectiveColumnLayout(
+      viewportWidth: availableViewportWidth,
       checkboxWidth: checkboxW,
       actionsWidth: actionsW,
       columnOffsets: columnOffsets,
       columnWidths: effectiveWidths,
       dividerOffsets: dividerOffsets,
       totalWidth: totalTableW,
+      visibleColumnIndices: visibleColumnIndices,
+      effectiveFrozenColumnCount: effectiveFrozenColumnCount,
+      leadingPinnedWidth: candLeadingW,
+      trailingPinnedWidth: candTrailingW,
+      isCheckboxPinned: isCheckboxPinned,
+      isActionsPinned: isActionsPinned,
+      leadingColumnIndices: leadingColumnIndices,
+      scrollableColumnIndices: scrollableColumnIndices,
+      leadingDividerOffsets: leadingDividerOffsets,
+      scrollableDividerOffsets: scrollableDividerOffsets,
     );
   }
 
@@ -1848,9 +2268,15 @@ class _DenseTableState extends State<DenseTable> {
         final style = widget.style;
         final rowCount = _totalRowCount;
 
+        var visibleBaseDataWidth = 0.0;
+        for (var i = 0; i < _baseColumnWidths.length; i++) {
+          if (_resolvedColumns[i].visible) {
+            visibleBaseDataWidth += _baseColumnWidths[i];
+          }
+        }
         final rawIntrinsicWidth =
             (_showCheckboxes ? style.checkboxColumnWidth : 0.0) +
-                _baseColumnWidths.fold<double>(0.0, (s, w) => s + w) +
+                visibleBaseDataWidth +
                 (_hasActionsColumn ? widget.actionsWidth : 0.0);
 
         final hasBoundedW =
@@ -1860,7 +2286,14 @@ class _DenseTableState extends State<DenseTable> {
             : rawIntrinsicWidth + borderThickness;
         final viewportWidth = math.max(0.0, outerWidth - borderThickness);
 
+        final prevLayout = _lastComputedLayout;
         final layout = _computeColumnLayout(viewportWidth);
+        if (prevLayout != null &&
+            (layout.maxHorizontalScrollExtent <
+                    prevLayout.maxHorizontalScrollExtent - 0.5 ||
+                prevLayout.hasPinnedBands != layout.hasPinnedBands)) {
+          _scheduleHorizontalHeaderSync();
+        }
         _lastViewportWidth = viewportWidth;
         _lastComputedLayout = layout;
 
@@ -1969,12 +2402,256 @@ class _DenseTableState extends State<DenseTable> {
     );
   }
 
+  Widget _buildActionsHeaderCell({
+    required double width,
+    required double height,
+  }) {
+    final style = widget.style;
+    return Container(
+      width: width,
+      height: height,
+      padding: widget.actionsCellPadding ?? style.cellPadding,
+      alignment: widget.actionsAlignment,
+      child: widget.actionsHeaderChild ??
+          Text(
+            widget.actionsHeader,
+            style: style.headerTextStyle,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+    );
+  }
+
   Widget _buildStickyHeader({
     required _EffectiveColumnLayout layout,
     required double headerHeight,
   }) {
     final style = widget.style;
     final sortState = _controller.sortState;
+
+    final Widget headerSurface;
+    if (!layout.hasPinnedBands) {
+      headerSurface = CustomPaint(
+        painter: _DenseHeaderGridPainter(
+          backgroundColor: style.headerBackgroundColor,
+          borderColor: style.borderColor,
+          dividerOffsets: layout.dividerOffsets,
+        ),
+        child: Row(
+          children: <Widget>[
+            if (_showCheckboxes)
+              SizedBox(
+                width: layout.checkboxWidth,
+                height: headerHeight,
+                child: _buildHeaderSelectAllCell(),
+              ),
+            for (final i in layout.visibleColumnIndices)
+              _buildHeaderCell(
+                columnIndex: i,
+                width: layout.columnWidths[i],
+                height: headerHeight,
+                sortDirection: sortState != null && sortState.columnIndex == i
+                    ? sortState.direction
+                    : null,
+              ),
+            if (_hasActionsColumn)
+              _buildActionsHeaderCell(
+                width: layout.actionsWidth,
+                height: headerHeight,
+              ),
+          ],
+        ),
+      );
+    } else {
+      final opaqueHeaderBg = Color.alphaBlend(
+        style.headerBackgroundColor,
+        style.backgroundColor,
+      );
+      final freezeDividerColor =
+          style.pinnedColumnDividerColor ?? style.borderColor;
+      final leadingW = layout.leadingPinnedWidth;
+      final trailingW = layout.trailingPinnedWidth;
+      final viewportW = layout.viewportWidth;
+      final maxExtent = layout.maxHorizontalScrollExtent;
+      final shadowW = style.pinnedColumnShadowWidth;
+
+      final Widget? leadingHeaderStrip = layout.hasLeadingPin
+          ? Listener(
+              behavior: HitTestBehavior.opaque,
+              child: CustomPaint(
+                painter: _DensePinnedHeaderStripPainter(
+                  backgroundColor: opaqueHeaderBg,
+                  borderColor: style.borderColor,
+                  freezeDividerColor: freezeDividerColor,
+                  dividerOffsets: layout.leadingDividerOffsets,
+                  drawLeftFreezeDivider: false,
+                  drawRightFreezeDivider: true,
+                ),
+                child: Row(
+                  children: <Widget>[
+                    if (layout.isCheckboxPinned)
+                      SizedBox(
+                        width: layout.checkboxWidth,
+                        height: headerHeight,
+                        child: _buildHeaderSelectAllCell(),
+                      ),
+                    for (final i in layout.leadingColumnIndices)
+                      _buildHeaderCell(
+                        columnIndex: i,
+                        width: layout.columnWidths[i],
+                        height: headerHeight,
+                        sortDirection:
+                            sortState != null && sortState.columnIndex == i
+                                ? sortState.direction
+                                : null,
+                      ),
+                  ],
+                ),
+              ),
+            )
+          : null;
+
+      final Widget? trailingHeaderStrip = layout.hasTrailingPin
+          ? Listener(
+              behavior: HitTestBehavior.opaque,
+              child: CustomPaint(
+                painter: _DensePinnedHeaderStripPainter(
+                  backgroundColor: opaqueHeaderBg,
+                  borderColor: style.borderColor,
+                  freezeDividerColor: freezeDividerColor,
+                  dividerOffsets: const <double>[],
+                  drawLeftFreezeDivider: true,
+                  drawRightFreezeDivider: false,
+                ),
+                child: _buildActionsHeaderCell(
+                  width: trailingW,
+                  height: headerHeight,
+                ),
+              ),
+            )
+          : null;
+
+      final Widget? leadingShadow = layout.hasLeadingPin && shadowW > 0
+          ? IgnorePointer(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: <Color>[
+                      style.pinnedColumnShadowColor,
+                      const Color(0x00000000),
+                    ],
+                  ),
+                ),
+              ),
+            )
+          : null;
+
+      final Widget? trailingShadow = layout.hasTrailingPin && shadowW > 0
+          ? IgnorePointer(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: <Color>[
+                      const Color(0x00000000),
+                      style.pinnedColumnShadowColor,
+                    ],
+                  ),
+                ),
+              ),
+            )
+          : null;
+
+      headerSurface = Stack(
+        fit: StackFit.expand,
+        children: <Widget>[
+          CustomPaint(
+            painter: _DenseHeaderGridPainter(
+              backgroundColor: style.headerBackgroundColor,
+              borderColor: style.borderColor,
+              dividerOffsets: layout.scrollableDividerOffsets,
+            ),
+            child: Row(
+              children: <Widget>[
+                if (layout.hasLeadingPin)
+                  SizedBox(width: leadingW, height: headerHeight)
+                else if (_showCheckboxes)
+                  SizedBox(
+                    width: layout.checkboxWidth,
+                    height: headerHeight,
+                    child: _buildHeaderSelectAllCell(),
+                  ),
+                for (final i in layout.scrollableColumnIndices)
+                  _buildHeaderCell(
+                    columnIndex: i,
+                    width: layout.columnWidths[i],
+                    height: headerHeight,
+                    sortDirection:
+                        sortState != null && sortState.columnIndex == i
+                            ? sortState.direction
+                            : null,
+                  ),
+                if (layout.hasTrailingPin)
+                  SizedBox(width: trailingW, height: headerHeight)
+                else if (_hasActionsColumn)
+                  _buildActionsHeaderCell(
+                    width: layout.actionsWidth,
+                    height: headerHeight,
+                  ),
+              ],
+            ),
+          ),
+          AnimatedBuilder(
+            animation: _headerHorizontalController,
+            builder: (context, _) {
+              final sHdr = _clampedHorizontalOffset(
+                _headerHorizontalController,
+                maxExtent,
+              );
+              final showLeadingShadow = leadingShadow != null && sHdr > 0.5;
+              final showTrailingShadow =
+                  trailingShadow != null && sHdr < maxExtent - 0.5;
+              return Stack(
+                clipBehavior: Clip.none,
+                children: <Widget>[
+                  if (showLeadingShadow)
+                    Positioned(
+                      left: sHdr + leadingW,
+                      top: 0.0,
+                      bottom: 0.0,
+                      width: shadowW,
+                      child: leadingShadow,
+                    ),
+                  if (showTrailingShadow)
+                    Positioned(
+                      left: sHdr + viewportW - trailingW - shadowW,
+                      top: 0.0,
+                      bottom: 0.0,
+                      width: shadowW,
+                      child: trailingShadow,
+                    ),
+                  if (leadingHeaderStrip != null)
+                    Positioned(
+                      left: sHdr,
+                      top: 0.0,
+                      bottom: 0.0,
+                      width: leadingW,
+                      child: leadingHeaderStrip,
+                    ),
+                  if (trailingHeaderStrip != null)
+                    Positioned(
+                      left: sHdr + viewportW - trailingW,
+                      top: 0.0,
+                      bottom: 0.0,
+                      width: trailingW,
+                      child: trailingHeaderStrip,
+                    ),
+                ],
+              );
+            },
+          ),
+        ],
+      );
+    }
 
     return Listener(
       onPointerSignal: (event) {
@@ -1994,46 +2671,7 @@ class _DenseTableState extends State<DenseTable> {
         child: SizedBox(
           width: layout.totalWidth,
           height: headerHeight,
-          child: CustomPaint(
-            painter: _DenseHeaderGridPainter(
-              backgroundColor: style.headerBackgroundColor,
-              borderColor: style.borderColor,
-              dividerOffsets: layout.dividerOffsets,
-            ),
-            child: Row(
-              children: <Widget>[
-                if (_showCheckboxes)
-                  SizedBox(
-                    width: layout.checkboxWidth,
-                    height: headerHeight,
-                    child: _buildHeaderSelectAllCell(),
-                  ),
-                for (var i = 0; i < _resolvedColumns.length; i++)
-                  _buildHeaderCell(
-                    columnIndex: i,
-                    width: layout.columnWidths[i],
-                    height: headerHeight,
-                    sortDirection:
-                        sortState != null && sortState.columnIndex == i
-                            ? sortState.direction
-                            : null,
-                  ),
-                if (_hasActionsColumn)
-                  Container(
-                    width: layout.actionsWidth,
-                    height: headerHeight,
-                    padding: style.cellPadding,
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      widget.actionsHeader,
-                      style: style.headerTextStyle,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-              ],
-            ),
-          ),
+          child: headerSurface,
         ),
       ),
     );
@@ -2159,7 +2797,7 @@ class _DenseTableState extends State<DenseTable> {
 
     Widget interactiveLabel = Container(
       key: canSort ? null : col.headerKey,
-      padding: style.cellPadding,
+      padding: col.cellPadding ?? style.cellPadding,
       alignment: col.alignment,
       child: labelContent,
     );
@@ -2344,14 +2982,50 @@ class _DenseTableState extends State<DenseTable> {
 
     final hasSpans = widget.rowSpanBuilder != null;
     final hasEditors = _hasEditableColumns;
-    if (!hasSpans && !hasEditors) {
+    final hasPinnedShadows =
+        layout.hasPinnedBands && style.pinnedColumnShadowWidth > 0;
+    if (!hasSpans && !hasEditors && !hasPinnedShadows) {
       return listView;
     }
 
     final overlayListenable = Listenable.merge(<Listenable>[
       _verticalController,
       _controller,
+      if (layout.hasPinnedBands) _bodyHorizontalController,
     ]);
+
+    final shadowHeight = math.min(bodyHeight, rowCount * style.rowHeight);
+    final shadowW = style.pinnedColumnShadowWidth;
+    final maxExtent = layout.maxHorizontalScrollExtent;
+    final leadingW = layout.leadingPinnedWidth;
+    final trailingW = layout.trailingPinnedWidth;
+    final viewportW = layout.viewportWidth;
+
+    final Widget? leadingShadowBox = hasPinnedShadows && layout.hasLeadingPin
+        ? DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: <Color>[
+                  style.pinnedColumnShadowColor,
+                  const Color(0x00000000),
+                ],
+              ),
+            ),
+          )
+        : null;
+
+    final Widget? trailingShadowBox = hasPinnedShadows && layout.hasTrailingPin
+        ? DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: <Color>[
+                  const Color(0x00000000),
+                  style.pinnedColumnShadowColor,
+                ],
+              ),
+            ),
+          )
+        : null;
 
     return ClipRect(
       child: Stack(
@@ -2368,6 +3042,45 @@ class _DenseTableState extends State<DenseTable> {
                   bodyHeight: bodyHeight,
                   layout: layout,
                 ),
+              ),
+            ),
+          if (hasPinnedShadows && shadowHeight > 0.0)
+            IgnorePointer(
+              child: AnimatedBuilder(
+                animation: _bodyHorizontalController,
+                builder: (context, _) {
+                  final s = _clampedHorizontalOffset(
+                    _bodyHorizontalController,
+                    maxExtent,
+                  );
+                  final showLeading = leadingShadowBox != null && s > 0.5;
+                  final showTrailing =
+                      trailingShadowBox != null && s < maxExtent - 0.5;
+                  if (!showLeading && !showTrailing) {
+                    return const SizedBox.shrink();
+                  }
+                  return Stack(
+                    clipBehavior: Clip.none,
+                    children: <Widget>[
+                      if (showLeading)
+                        Positioned(
+                          left: s + leadingW,
+                          top: 0.0,
+                          width: shadowW,
+                          height: shadowHeight,
+                          child: leadingShadowBox,
+                        ),
+                      if (showTrailing)
+                        Positioned(
+                          left: s + viewportW - trailingW - shadowW,
+                          top: 0.0,
+                          width: shadowW,
+                          height: shadowHeight,
+                          child: trailingShadowBox,
+                        ),
+                    ],
+                  );
+                },
               ),
             ),
           if (hasEditors)
@@ -2393,7 +3106,8 @@ class _DenseTableState extends State<DenseTable> {
     if (coord == null ||
         rowCount <= 0 ||
         coord.columnIndex < 0 ||
-        coord.columnIndex >= _resolvedColumns.length) {
+        coord.columnIndex >= _resolvedColumns.length ||
+        !_resolvedColumns[coord.columnIndex].visible) {
       return const SizedBox.shrink();
     }
 
@@ -2455,7 +3169,7 @@ class _DenseTableState extends State<DenseTable> {
       );
     } else {
       editorBody = Padding(
-        padding: style.cellPadding,
+        padding: col.cellPadding ?? style.cellPadding,
         child: Align(
           alignment: col.alignment,
           child: EditableText(
@@ -2480,6 +3194,78 @@ class _DenseTableState extends State<DenseTable> {
       );
     }
 
+    final editorBox = TapRegion(
+      groupId: _editTapRegionGroup,
+      onTapOutside: widget.commitOnTapOutside ? _handleEditorTapOutside : null,
+      child: Focus(
+        canRequestFocus: false,
+        skipTraversal: true,
+        onKeyEvent: _handleEditorKeyEvent,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: bgColor,
+            border: Border.all(color: borderColor, width: 1.5),
+          ),
+          child: editorBody,
+        ),
+      ),
+    );
+
+    if (layout.hasPinnedBands) {
+      final s = _clampedHorizontalOffset(
+        _bodyHorizontalController,
+        layout.maxHorizontalScrollExtent,
+      );
+      if (layout.isColumnFrozen(coord.columnIndex)) {
+        return Stack(
+          clipBehavior: Clip.none,
+          children: <Widget>[
+            Positioned(
+              key: const ValueKey<String>('_dense_editor_pos'),
+              left: s + colLeft,
+              top: boxTop,
+              width: colW,
+              height: boxHeight,
+              child: editorBox,
+            ),
+          ],
+        );
+      }
+      final clipLeft = s + layout.leadingPinnedWidth;
+      final clipWidth = math.max(
+        0.0,
+        layout.viewportWidth -
+            layout.leadingPinnedWidth -
+            layout.trailingPinnedWidth,
+      );
+      return Stack(
+        clipBehavior: Clip.none,
+        children: <Widget>[
+          Positioned(
+            left: clipLeft,
+            top: 0.0,
+            bottom: 0.0,
+            width: clipWidth,
+            child: ClipRect(
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: <Widget>[
+                  Positioned(
+                    key: const ValueKey<String>('_dense_editor_pos'),
+                    left: colLeft - clipLeft,
+                    top: boxTop,
+                    width: colW,
+                    height: boxHeight,
+                    child: editorBox,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+
     return Stack(
       clipBehavior: Clip.none,
       children: <Widget>[
@@ -2489,23 +3275,7 @@ class _DenseTableState extends State<DenseTable> {
           top: boxTop,
           width: colW,
           height: boxHeight,
-          child: TapRegion(
-            groupId: _editTapRegionGroup,
-            onTapOutside:
-                widget.commitOnTapOutside ? _handleEditorTapOutside : null,
-            child: Focus(
-              canRequestFocus: false,
-              skipTraversal: true,
-              onKeyEvent: _handleEditorKeyEvent,
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: bgColor,
-                  border: Border.all(color: borderColor, width: 1.5),
-                ),
-                child: editorBody,
-              ),
-            ),
-          ),
+          child: editorBox,
         ),
       ],
     );
@@ -2518,7 +3288,10 @@ class _DenseTableState extends State<DenseTable> {
     required _EffectiveColumnLayout layout,
   }) {
     final spanResolver = widget.rowSpanBuilder;
-    if (spanResolver == null || rowCount <= 0 || bodyHeight <= 0) {
+    if (spanResolver == null ||
+        rowCount <= 0 ||
+        bodyHeight <= 0 ||
+        layout.visibleColumnIndices.isEmpty) {
       return const SizedBox.shrink();
     }
 
@@ -2532,16 +3305,43 @@ class _DenseTableState extends State<DenseTable> {
     final lastRow =
         ((scrollOffset + bodyHeight) / rowH).ceil().clamp(0, rowCount - 1);
     final colCount = _resolvedColumns.length;
-    final mergedWidgets = <Widget>[];
+    final hasPinned = layout.hasPinnedBands;
+    final s = hasPinned
+        ? _clampedHorizontalOffset(
+            _bodyHorizontalController,
+            layout.maxHorizontalScrollExtent,
+          )
+        : 0.0;
+    final clipLeft = hasPinned ? s + layout.leadingPinnedWidth : 0.0;
+    final clipWidth = hasPinned
+        ? math.max(
+            0.0,
+            layout.viewportWidth -
+                layout.leadingPinnedWidth -
+                layout.trailingPinnedWidth,
+          )
+        : layout.totalWidth;
+    final lastVisibleCol = layout.visibleColumnIndices.last;
+    final lastLeadingCol = layout.leadingColumnIndices.isNotEmpty
+        ? layout.leadingColumnIndices.last
+        : -1;
+    final freezeDividerColor =
+        style.pinnedColumnDividerColor ?? style.borderColor;
 
-    for (var colIdx = 0; colIdx < colCount; colIdx++) {
+    final scrollableMergedWidgets = <Widget>[];
+    final frozenMergedWidgets = <Widget>[];
+
+    for (final colIdx in layout.visibleColumnIndices) {
+      final isFrozen = layout.isColumnFrozen(colIdx);
+      final isRightmostFrozen = isFrozen && colIdx == lastLeadingCol;
       final colLeft = layout.columnOffsets[colIdx];
       final colW = layout.columnWidths[colIdx];
       final col = _resolvedColumns[colIdx];
-      final hasRightDivider = style.showVerticalGridLines &&
-          (colIdx < colCount - 1 ||
-              _hasActionsColumn ||
-              (colLeft + colW < layout.totalWidth - 0.5));
+      final hasRightDivider = isRightmostFrozen ||
+          (style.showVerticalGridLines &&
+              (colIdx != lastVisibleCol ||
+                  _hasActionsColumn ||
+                  (colLeft + colW < layout.totalWidth - 0.5)));
 
       var vRow = firstRow;
       while (vRow <= lastRow) {
@@ -2574,7 +3374,7 @@ class _DenseTableState extends State<DenseTable> {
         }
 
         final cellChild = Padding(
-          padding: style.cellPadding,
+          padding: col.cellPadding ?? style.cellPadding,
           child: Align(
             alignment: col.alignment,
             child: _buildCellContent(
@@ -2586,51 +3386,163 @@ class _DenseTableState extends State<DenseTable> {
           ),
         );
 
-        mergedWidgets.add(
-          Positioned(
-            key: ValueKey<int>(startRow * colCount + colIdx),
-            left: colLeft,
-            top: boxTop,
-            width: colW,
-            height: boxHeight,
-            child: CustomPaint(
-              painter: _DenseMergedCellPainter(
-                backgroundColor: span.backgroundColor ?? style.backgroundColor,
-                gridColor: style.gridColor,
-                drawRightBorder: hasRightDivider,
-                drawBottomBorder: style.showHorizontalGridLines,
-                isDirty: isMergedDirty,
-                dirtyIndicatorColor: style.dirtyCellIndicatorColor,
-                dirtyIndicatorSize: style.dirtyCellIndicatorSize,
-              ),
-              child: innerTop == 0.0 && innerHeight == boxHeight
-                  ? cellChild
-                  : Stack(
-                      fit: StackFit.expand,
-                      children: <Widget>[
-                        Positioned(
-                          left: 0.0,
-                          right: 0.0,
-                          top: innerTop,
-                          height: innerHeight,
-                          child: cellChild,
-                        ),
-                      ],
-                    ),
+        final rawBg = span.backgroundColor ?? style.backgroundColor;
+        final mergedBg =
+            isFrozen ? Color.alphaBlend(rawBg, style.backgroundColor) : rawBg;
+        final leftPos = !hasPinned
+            ? colLeft
+            : (isFrozen ? s + colLeft : colLeft - clipLeft);
+
+        final positionedSpan = Positioned(
+          key: ValueKey<int>(startRow * colCount + colIdx),
+          left: leftPos,
+          top: boxTop,
+          width: colW,
+          height: boxHeight,
+          child: CustomPaint(
+            painter: _DenseMergedCellPainter(
+              backgroundColor: mergedBg,
+              gridColor: style.gridColor,
+              rightBorderColor:
+                  isRightmostFrozen ? freezeDividerColor : style.gridColor,
+              drawRightBorder: hasRightDivider,
+              drawBottomBorder: style.showHorizontalGridLines,
+              isDirty: isMergedDirty,
+              dirtyIndicatorColor: style.dirtyCellIndicatorColor,
+              dirtyIndicatorSize: style.dirtyCellIndicatorSize,
             ),
+            child: innerTop == 0.0 && innerHeight == boxHeight
+                ? cellChild
+                : Stack(
+                    fit: StackFit.expand,
+                    children: <Widget>[
+                      Positioned(
+                        left: 0.0,
+                        right: 0.0,
+                        top: innerTop,
+                        height: innerHeight,
+                        child: cellChild,
+                      ),
+                    ],
+                  ),
           ),
         );
+
+        if (hasPinned && isFrozen) {
+          frozenMergedWidgets.add(positionedSpan);
+        } else {
+          scrollableMergedWidgets.add(positionedSpan);
+        }
 
         vRow = math.max(vRow + 1, endExcl);
       }
     }
 
-    if (mergedWidgets.isEmpty) {
+    if (scrollableMergedWidgets.isEmpty && frozenMergedWidgets.isEmpty) {
       return const SizedBox.shrink();
+    }
+    if (!hasPinned) {
+      return Stack(
+        clipBehavior: Clip.none,
+        children: scrollableMergedWidgets,
+      );
     }
     return Stack(
       clipBehavior: Clip.none,
-      children: mergedWidgets,
+      children: <Widget>[
+        if (scrollableMergedWidgets.isNotEmpty && clipWidth > 0.0)
+          Positioned(
+            left: clipLeft,
+            top: 0.0,
+            width: clipWidth,
+            height: bodyHeight,
+            child: ClipRect(
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: scrollableMergedWidgets,
+              ),
+            ),
+          ),
+        ...frozenMergedWidgets,
+      ],
+    );
+  }
+
+  Widget _buildRowCheckboxCell({
+    required int visualIndex,
+    required double width,
+    required double height,
+    required bool isSelected,
+    required DenseStyle style,
+  }) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => _handleRowPointerTap(
+        visualIndex,
+        fromCheckbox: true,
+      ),
+      child: SizedBox(
+        width: width,
+        height: height,
+        child: Center(
+          child: _DenseCheckbox(
+            value: isSelected,
+            style: style,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRowDataCell({
+    required BuildContext context,
+    required int originalIndex,
+    required int colIdx,
+    required double width,
+    required double height,
+    required bool isOverlaid,
+    required TextStyle textStyle,
+    required DenseStyle style,
+  }) {
+    if (isOverlaid) {
+      return SizedBox(width: width, height: height);
+    }
+    final col = _resolvedColumns[colIdx];
+    return SizedBox(
+      width: width,
+      height: height,
+      child: Padding(
+        padding: col.cellPadding ?? style.cellPadding,
+        child: Align(
+          alignment: col.alignment,
+          child: _buildCellContent(
+            context: context,
+            originalRowIndex: originalIndex,
+            columnIndex: colIdx,
+            textStyle: textStyle,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildActionsBodyCell({
+    required BuildContext context,
+    required int originalIndex,
+    required double width,
+    required double height,
+  }) {
+    final style = widget.style;
+    return SizedBox(
+      width: width,
+      height: height,
+      child: Padding(
+        padding: widget.actionsCellPadding ?? style.cellPadding,
+        child: Align(
+          alignment: widget.actionsAlignment,
+          child: _buildRowActions(context, originalIndex),
+        ),
+      ),
     );
   }
 
@@ -2643,10 +3555,14 @@ class _DenseTableState extends State<DenseTable> {
     final originalIndex = _visualToOriginalIndex(visualIndex);
     final style = widget.style;
     final hasEditors = _hasEditableColumns;
+    final handleSecondaryTap = widget.onRowSecondaryTapDown != null ||
+        (widget.selectOnSecondaryTap &&
+            widget.selectionMode != DenseSelectionMode.none);
     final isInteractive = hasEditors ||
         widget.selectionMode != DenseSelectionMode.none ||
         widget.onRowTap != null ||
         widget.onRowDoubleTap != null ||
+        widget.onRowSecondaryTapDown != null ||
         widget.onRowActivated != null;
 
     return MouseRegion(
@@ -2659,8 +3575,8 @@ class _DenseTableState extends State<DenseTable> {
           fromCheckbox: false,
           localDx: details.localPosition.dx,
         ),
-        onSecondaryTapDown: widget.onRowSecondaryTapDown != null
-            ? (details) => widget.onRowSecondaryTapDown!(originalIndex, details)
+        onSecondaryTapDown: handleSecondaryTap
+            ? (details) => _handleRowSecondaryTapDown(originalIndex, details)
             : null,
         child: AnimatedBuilder(
           animation: rowListenable,
@@ -2670,6 +3586,9 @@ class _DenseTableState extends State<DenseTable> {
             final isFocused = _hasFocusNotifier.value &&
                 _controller.focusedRow == originalIndex;
 
+            final rowBaseBg = visualIndex.isEven
+                ? style.backgroundColor
+                : style.altBackgroundColor;
             Color bgColor;
             if (isSelected && isHovered) {
               bgColor = style.selectedHoveredRowColor;
@@ -2678,9 +3597,7 @@ class _DenseTableState extends State<DenseTable> {
             } else if (isHovered) {
               bgColor = style.hoveredRowColor;
             } else {
-              bgColor = visualIndex.isEven
-                  ? style.backgroundColor
-                  : style.altBackgroundColor;
+              bgColor = rowBaseBg;
             }
 
             final effectiveTextStyle = isSelected
@@ -2691,7 +3608,7 @@ class _DenseTableState extends State<DenseTable> {
             final spanResolver = widget.rowSpanBuilder;
             List<bool>? overlaidCols;
             if (spanResolver != null) {
-              for (var c = 0; c < colCount; c++) {
+              for (final c in layout.visibleColumnIndices) {
                 if (_isSpanOverlaid(spanResolver(visualIndex, c))) {
                   overlaidCols ??= List<bool>.filled(colCount, false);
                   overlaidCols[c] = true;
@@ -2703,7 +3620,7 @@ class _DenseTableState extends State<DenseTable> {
             if (widget.trackDirtyCells &&
                 style.dirtyCellIndicatorSize > 0 &&
                 _controller.hasDirtyCells) {
-              for (var c = 0; c < colCount; c++) {
+              for (final c in layout.visibleColumnIndices) {
                 if (_controller.isCellDirty(originalIndex, c)) {
                   dirtyCols ??= List<bool>.filled(colCount, false);
                   dirtyCols[c] = true;
@@ -2711,29 +3628,139 @@ class _DenseTableState extends State<DenseTable> {
               }
             }
 
-            final focusedCol =
+            final rawFocusedCol =
                 (isFocused && hasEditors && !_controller.isEditing)
                     ? _controller.focusedColumn
                     : null;
+            final focusedCol = (rawFocusedCol != null &&
+                    rawFocusedCol >= 0 &&
+                    rawFocusedCol < colCount &&
+                    _resolvedColumns[rawFocusedCol].visible)
+                ? rawFocusedCol
+                : null;
 
-            return CustomPaint(
+            if (!layout.hasPinnedBands) {
+              return CustomPaint(
+                painter: _DenseRowGridPainter(
+                  baseBackgroundColor: style.backgroundColor,
+                  backgroundColor: bgColor,
+                  gridColor: style.gridColor,
+                  focusBorderColor:
+                      isFocused ? style.focusedRowBorderColor : null,
+                  focusedColumnIndex: focusedCol,
+                  focusedCellBorderColor: style.focusedCellBorderColor ??
+                      style.focusedRowBorderColor,
+                  dirtyColumns: dirtyCols,
+                  dirtyIndicatorColor: style.dirtyCellIndicatorColor,
+                  dirtyIndicatorSize: style.dirtyCellIndicatorSize,
+                  checkboxWidth: layout.checkboxWidth,
+                  columnOffsets: layout.columnOffsets,
+                  columnWidths: layout.columnWidths,
+                  overlaidColumns: overlaidCols,
+                  dividerOffsets: layout.dividerOffsets,
+                  showVerticalLines: style.showVerticalGridLines,
+                  showHorizontalLines: style.showHorizontalGridLines,
+                ),
+                child: SizedBox(
+                  width: layout.totalWidth,
+                  height: style.rowHeight,
+                  child: Row(
+                    children: <Widget>[
+                      if (_showCheckboxes)
+                        _buildRowCheckboxCell(
+                          visualIndex: visualIndex,
+                          width: layout.checkboxWidth,
+                          height: style.rowHeight,
+                          isSelected: isSelected,
+                          style: style,
+                        ),
+                      for (final colIdx in layout.visibleColumnIndices)
+                        _buildRowDataCell(
+                          context: context,
+                          originalIndex: originalIndex,
+                          colIdx: colIdx,
+                          width: layout.columnWidths[colIdx],
+                          height: style.rowHeight,
+                          isOverlaid:
+                              overlaidCols != null && overlaidCols[colIdx],
+                          textStyle: effectiveTextStyle,
+                          style: style,
+                        ),
+                      if (_hasActionsColumn)
+                        _buildActionsBodyCell(
+                          context: context,
+                          originalIndex: originalIndex,
+                          width: layout.actionsWidth,
+                          height: style.rowHeight,
+                        ),
+                    ],
+                  ),
+                ),
+              );
+            }
+
+            final opaqueBaseBg = Color.alphaBlend(
+              rowBaseBg,
+              style.backgroundColor,
+            );
+            final opaquePinnedBg = Color.alphaBlend(bgColor, opaqueBaseBg);
+            final freezeDividerColor =
+                style.pinnedColumnDividerColor ?? style.borderColor;
+            final focusedCellColor =
+                style.focusedCellBorderColor ?? style.focusedRowBorderColor;
+
+            final isFocusedColFrozen =
+                focusedCol != null && layout.isColumnFrozen(focusedCol);
+
+            List<bool>? leadingOverlaidCols;
+            if (overlaidCols != null &&
+                layout.leadingColumnIndices.isNotEmpty) {
+              for (final c in layout.leadingColumnIndices) {
+                if (overlaidCols[c]) {
+                  leadingOverlaidCols = overlaidCols;
+                  break;
+                }
+              }
+            }
+
+            List<bool>? leadingDirtyCols;
+            if (dirtyCols != null && layout.leadingColumnIndices.isNotEmpty) {
+              for (final c in layout.leadingColumnIndices) {
+                if (dirtyCols[c]) {
+                  leadingDirtyCols = dirtyCols;
+                  break;
+                }
+              }
+            }
+
+            List<bool>? scrollableDirtyCols;
+            if (dirtyCols != null &&
+                layout.scrollableColumnIndices.isNotEmpty) {
+              for (final c in layout.scrollableColumnIndices) {
+                if (dirtyCols[c]) {
+                  scrollableDirtyCols ??= List<bool>.filled(colCount, false);
+                  scrollableDirtyCols[c] = true;
+                }
+              }
+            }
+
+            final scrollableRow = CustomPaint(
               painter: _DenseRowGridPainter(
                 baseBackgroundColor: style.backgroundColor,
                 backgroundColor: bgColor,
                 gridColor: style.gridColor,
                 focusBorderColor:
                     isFocused ? style.focusedRowBorderColor : null,
-                focusedColumnIndex: focusedCol,
-                focusedCellBorderColor:
-                    style.focusedCellBorderColor ?? style.focusedRowBorderColor,
-                dirtyColumns: dirtyCols,
+                focusedColumnIndex: isFocusedColFrozen ? null : focusedCol,
+                focusedCellBorderColor: focusedCellColor,
+                dirtyColumns: scrollableDirtyCols,
                 dirtyIndicatorColor: style.dirtyCellIndicatorColor,
                 dirtyIndicatorSize: style.dirtyCellIndicatorSize,
                 checkboxWidth: layout.checkboxWidth,
                 columnOffsets: layout.columnOffsets,
                 columnWidths: layout.columnWidths,
                 overlaidColumns: overlaidCols,
-                dividerOffsets: layout.dividerOffsets,
+                dividerOffsets: layout.scrollableDividerOffsets,
                 showVerticalLines: style.showVerticalGridLines,
                 showHorizontalLines: style.showHorizontalGridLines,
               ),
@@ -2742,63 +3769,190 @@ class _DenseTableState extends State<DenseTable> {
                 height: style.rowHeight,
                 child: Row(
                   children: <Widget>[
-                    if (_showCheckboxes)
-                      GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: () => _handleRowPointerTap(
-                          visualIndex,
-                          fromCheckbox: true,
-                        ),
-                        child: SizedBox(
-                          width: layout.checkboxWidth,
-                          height: style.rowHeight,
-                          child: Center(
-                            child: _DenseCheckbox(
-                              value: isSelected,
-                              style: style,
-                            ),
-                          ),
-                        ),
-                      ),
-                    for (var colIdx = 0;
-                        colIdx < _resolvedColumns.length;
-                        colIdx++)
-                      if (overlaidCols != null && overlaidCols[colIdx])
-                        SizedBox(
-                          width: layout.columnWidths[colIdx],
-                          height: style.rowHeight,
-                        )
-                      else
-                        SizedBox(
-                          width: layout.columnWidths[colIdx],
-                          height: style.rowHeight,
-                          child: Padding(
-                            padding: style.cellPadding,
-                            child: Align(
-                              alignment: _resolvedColumns[colIdx].alignment,
-                              child: _buildCellContent(
-                                context: context,
-                                originalRowIndex: originalIndex,
-                                columnIndex: colIdx,
-                                textStyle: effectiveTextStyle,
-                              ),
-                            ),
-                          ),
-                        ),
-                    if (_hasActionsColumn)
+                    if (layout.hasLeadingPin)
                       SizedBox(
+                        width: layout.leadingPinnedWidth,
+                        height: style.rowHeight,
+                      )
+                    else if (_showCheckboxes)
+                      _buildRowCheckboxCell(
+                        visualIndex: visualIndex,
+                        width: layout.checkboxWidth,
+                        height: style.rowHeight,
+                        isSelected: isSelected,
+                        style: style,
+                      ),
+                    for (final colIdx in layout.scrollableColumnIndices)
+                      _buildRowDataCell(
+                        context: context,
+                        originalIndex: originalIndex,
+                        colIdx: colIdx,
+                        width: layout.columnWidths[colIdx],
+                        height: style.rowHeight,
+                        isOverlaid:
+                            overlaidCols != null && overlaidCols[colIdx],
+                        textStyle: effectiveTextStyle,
+                        style: style,
+                      ),
+                    if (layout.hasTrailingPin)
+                      SizedBox(
+                        width: layout.trailingPinnedWidth,
+                        height: style.rowHeight,
+                      )
+                    else if (_hasActionsColumn)
+                      _buildActionsBodyCell(
+                        context: context,
+                        originalIndex: originalIndex,
                         width: layout.actionsWidth,
                         height: style.rowHeight,
-                        child: Padding(
-                          padding: style.cellPadding,
-                          child: Align(
-                            alignment: Alignment.centerLeft,
-                            child: _buildRowActions(context, originalIndex),
-                          ),
-                        ),
                       ),
                   ],
                 ),
+              ),
+            );
+
+            final Widget? leadingPinnedStrip = layout.hasLeadingPin
+                ? Listener(
+                    behavior: HitTestBehavior.opaque,
+                    child: CustomPaint(
+                      painter: _DensePinnedRowStripPainter(
+                        baseBackgroundColor: style.backgroundColor,
+                        backgroundColor: opaquePinnedBg,
+                        gridColor: style.gridColor,
+                        freezeDividerColor: freezeDividerColor,
+                        drawLeftFreezeDivider: false,
+                        drawRightFreezeDivider: true,
+                        drawLeftFocusEdge: true,
+                        drawRightFocusEdge: false,
+                        focusBorderColor:
+                            isFocused ? style.focusedRowBorderColor : null,
+                        focusedColumnIndex:
+                            isFocusedColFrozen ? focusedCol : null,
+                        focusedCellBorderColor: focusedCellColor,
+                        dirtyColumns: leadingDirtyCols,
+                        dirtyIndicatorColor: style.dirtyCellIndicatorColor,
+                        dirtyIndicatorSize: style.dirtyCellIndicatorSize,
+                        checkboxWidth: layout.isCheckboxPinned
+                            ? layout.checkboxWidth
+                            : 0.0,
+                        columnIndices: layout.leadingColumnIndices,
+                        columnOffsets: layout.columnOffsets,
+                        columnWidths: layout.columnWidths,
+                        overlaidColumns: leadingOverlaidCols,
+                        dividerOffsets: layout.leadingDividerOffsets,
+                        showVerticalLines: style.showVerticalGridLines,
+                        showHorizontalLines: style.showHorizontalGridLines,
+                      ),
+                      child: Row(
+                        children: <Widget>[
+                          if (layout.isCheckboxPinned)
+                            _buildRowCheckboxCell(
+                              visualIndex: visualIndex,
+                              width: layout.checkboxWidth,
+                              height: style.rowHeight,
+                              isSelected: isSelected,
+                              style: style,
+                            ),
+                          for (final colIdx in layout.leadingColumnIndices)
+                            _buildRowDataCell(
+                              context: context,
+                              originalIndex: originalIndex,
+                              colIdx: colIdx,
+                              width: layout.columnWidths[colIdx],
+                              height: style.rowHeight,
+                              isOverlaid:
+                                  overlaidCols != null && overlaidCols[colIdx],
+                              textStyle: effectiveTextStyle,
+                              style: style,
+                            ),
+                        ],
+                      ),
+                    ),
+                  )
+                : null;
+
+            final Widget? trailingPinnedStrip = layout.hasTrailingPin
+                ? Listener(
+                    behavior: HitTestBehavior.opaque,
+                    child: CustomPaint(
+                      painter: _DensePinnedRowStripPainter(
+                        baseBackgroundColor: style.backgroundColor,
+                        backgroundColor: opaquePinnedBg,
+                        gridColor: style.gridColor,
+                        freezeDividerColor: freezeDividerColor,
+                        drawLeftFreezeDivider: true,
+                        drawRightFreezeDivider: false,
+                        drawLeftFocusEdge: false,
+                        drawRightFocusEdge: true,
+                        focusBorderColor:
+                            isFocused ? style.focusedRowBorderColor : null,
+                        focusedColumnIndex: null,
+                        focusedCellBorderColor: focusedCellColor,
+                        dirtyColumns: null,
+                        dirtyIndicatorColor: style.dirtyCellIndicatorColor,
+                        dirtyIndicatorSize: style.dirtyCellIndicatorSize,
+                        checkboxWidth: 0.0,
+                        columnIndices: const <int>[],
+                        columnOffsets: const <double>[],
+                        columnWidths: const <double>[],
+                        overlaidColumns: null,
+                        dividerOffsets: const <double>[],
+                        showVerticalLines: style.showVerticalGridLines,
+                        showHorizontalLines: style.showHorizontalGridLines,
+                      ),
+                      child: _buildActionsBodyCell(
+                        context: context,
+                        originalIndex: originalIndex,
+                        width: layout.trailingPinnedWidth,
+                        height: style.rowHeight,
+                      ),
+                    ),
+                  )
+                : null;
+
+            final maxExtent = layout.maxHorizontalScrollExtent;
+            final viewportW = layout.viewportWidth;
+            final leadingW = layout.leadingPinnedWidth;
+            final trailingW = layout.trailingPinnedWidth;
+
+            return SizedBox(
+              width: layout.totalWidth,
+              height: style.rowHeight,
+              child: Stack(
+                fit: StackFit.expand,
+                children: <Widget>[
+                  scrollableRow,
+                  AnimatedBuilder(
+                    animation: _bodyHorizontalController,
+                    builder: (context, _) {
+                      final s = _clampedHorizontalOffset(
+                        _bodyHorizontalController,
+                        maxExtent,
+                      );
+                      return Stack(
+                        clipBehavior: Clip.none,
+                        children: <Widget>[
+                          if (leadingPinnedStrip != null)
+                            Positioned(
+                              left: s,
+                              top: 0.0,
+                              bottom: 0.0,
+                              width: leadingW,
+                              child: leadingPinnedStrip,
+                            ),
+                          if (trailingPinnedStrip != null)
+                            Positioned(
+                              left: s + viewportW - trailingW,
+                              top: 0.0,
+                              bottom: 0.0,
+                              width: trailingW,
+                              child: trailingPinnedStrip,
+                            ),
+                        ],
+                      );
+                    },
+                  ),
+                ],
               ),
             );
           },
@@ -2866,20 +4020,375 @@ class _DenseTableState extends State<DenseTable> {
 
 class _EffectiveColumnLayout {
   const _EffectiveColumnLayout({
+    required this.viewportWidth,
     required this.checkboxWidth,
     required this.actionsWidth,
     required this.columnOffsets,
     required this.columnWidths,
     required this.dividerOffsets,
     required this.totalWidth,
+    required this.visibleColumnIndices,
+    required this.effectiveFrozenColumnCount,
+    required this.leadingPinnedWidth,
+    required this.trailingPinnedWidth,
+    required this.isCheckboxPinned,
+    required this.isActionsPinned,
+    required this.leadingColumnIndices,
+    required this.scrollableColumnIndices,
+    required this.leadingDividerOffsets,
+    required this.scrollableDividerOffsets,
   });
 
+  final double viewportWidth;
   final double checkboxWidth;
   final double actionsWidth;
   final List<double> columnOffsets;
   final List<double> columnWidths;
   final List<double> dividerOffsets;
   final double totalWidth;
+  final List<int> visibleColumnIndices;
+  final int effectiveFrozenColumnCount;
+  final double leadingPinnedWidth;
+  final double trailingPinnedWidth;
+  final bool isCheckboxPinned;
+  final bool isActionsPinned;
+  final List<int> leadingColumnIndices;
+  final List<int> scrollableColumnIndices;
+  final List<double> leadingDividerOffsets;
+  final List<double> scrollableDividerOffsets;
+
+  bool get hasLeadingPin => leadingPinnedWidth > 0.0;
+  bool get hasTrailingPin => trailingPinnedWidth > 0.0;
+  bool get hasPinnedBands => hasLeadingPin || hasTrailingPin;
+
+  double get maxHorizontalScrollExtent =>
+      math.max(0.0, totalWidth - viewportWidth);
+
+  bool isColumnFrozen(int colIdx) =>
+      hasLeadingPin &&
+      colIdx >= 0 &&
+      colIdx < effectiveFrozenColumnCount &&
+      colIdx < columnWidths.length &&
+      columnWidths[colIdx] > 0.0;
+}
+
+class _DensePinnedHeaderStripPainter extends CustomPainter {
+  const _DensePinnedHeaderStripPainter({
+    required this.backgroundColor,
+    required this.borderColor,
+    required this.freezeDividerColor,
+    required this.dividerOffsets,
+    required this.drawLeftFreezeDivider,
+    required this.drawRightFreezeDivider,
+  });
+
+  final Color backgroundColor;
+  final Color borderColor;
+  final Color freezeDividerColor;
+  final List<double> dividerOffsets;
+  final bool drawLeftFreezeDivider;
+  final bool drawRightFreezeDivider;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final fillPaint = Paint()..color = backgroundColor;
+    canvas.drawRect(Offset.zero & size, fillPaint);
+
+    final linePaint = Paint()
+      ..color = borderColor
+      ..strokeWidth = 1.0;
+
+    for (var i = 0; i < dividerOffsets.length; i++) {
+      final x = dividerOffsets[i] - 0.5;
+      if (x > 0 && x <= size.width) {
+        canvas.drawLine(Offset(x, 0), Offset(x, size.height), linePaint);
+      }
+    }
+
+    if (drawLeftFreezeDivider || drawRightFreezeDivider) {
+      final freezePaint = Paint()
+        ..color = freezeDividerColor
+        ..strokeWidth = 1.0;
+      if (drawLeftFreezeDivider && size.width >= 1.0) {
+        canvas.drawLine(
+          const Offset(0.5, 0.0),
+          Offset(0.5, size.height),
+          freezePaint,
+        );
+      }
+      if (drawRightFreezeDivider && size.width >= 1.0) {
+        final rx = size.width - 0.5;
+        canvas.drawLine(
+          Offset(rx, 0.0),
+          Offset(rx, size.height),
+          freezePaint,
+        );
+      }
+    }
+
+    final bottomY = size.height - 0.5;
+    canvas.drawLine(Offset(0, bottomY), Offset(size.width, bottomY), linePaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _DensePinnedHeaderStripPainter oldDelegate) =>
+      oldDelegate.backgroundColor != backgroundColor ||
+      oldDelegate.borderColor != borderColor ||
+      oldDelegate.freezeDividerColor != freezeDividerColor ||
+      oldDelegate.drawLeftFreezeDivider != drawLeftFreezeDivider ||
+      oldDelegate.drawRightFreezeDivider != drawRightFreezeDivider ||
+      !_doubleListEquals(oldDelegate.dividerOffsets, dividerOffsets);
+}
+
+class _DensePinnedRowStripPainter extends CustomPainter {
+  const _DensePinnedRowStripPainter({
+    required this.baseBackgroundColor,
+    required this.backgroundColor,
+    required this.gridColor,
+    required this.freezeDividerColor,
+    required this.drawLeftFreezeDivider,
+    required this.drawRightFreezeDivider,
+    required this.drawLeftFocusEdge,
+    required this.drawRightFocusEdge,
+    required this.focusBorderColor,
+    required this.focusedColumnIndex,
+    required this.focusedCellBorderColor,
+    required this.dirtyColumns,
+    required this.dirtyIndicatorColor,
+    required this.dirtyIndicatorSize,
+    required this.checkboxWidth,
+    required this.columnIndices,
+    required this.columnOffsets,
+    required this.columnWidths,
+    required this.overlaidColumns,
+    required this.dividerOffsets,
+    required this.showVerticalLines,
+    required this.showHorizontalLines,
+  });
+
+  final Color baseBackgroundColor;
+  final Color backgroundColor;
+  final Color gridColor;
+  final Color freezeDividerColor;
+  final bool drawLeftFreezeDivider;
+  final bool drawRightFreezeDivider;
+  final bool drawLeftFocusEdge;
+  final bool drawRightFocusEdge;
+  final Color? focusBorderColor;
+  final int? focusedColumnIndex;
+  final Color focusedCellBorderColor;
+  final List<bool>? dirtyColumns;
+  final Color dirtyIndicatorColor;
+  final double dirtyIndicatorSize;
+  final double checkboxWidth;
+  final List<int> columnIndices;
+  final List<double> columnOffsets;
+  final List<double> columnWidths;
+  final List<bool>? overlaidColumns;
+  final List<double> dividerOffsets;
+  final bool showVerticalLines;
+  final bool showHorizontalLines;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final overlaid = overlaidColumns;
+    if (overlaid == null) {
+      final fillPaint = Paint()..color = backgroundColor;
+      canvas.drawRect(Offset.zero & size, fillPaint);
+
+      if (showVerticalLines || showHorizontalLines) {
+        final gridPaint = Paint()
+          ..color = gridColor
+          ..strokeWidth = 1.0;
+
+        if (showVerticalLines) {
+          for (var i = 0; i < dividerOffsets.length; i++) {
+            final x = dividerOffsets[i] - 0.5;
+            if (x > 0 && x <= size.width) {
+              canvas.drawLine(Offset(x, 0), Offset(x, size.height), gridPaint);
+            }
+          }
+        }
+
+        if (showHorizontalLines) {
+          final y = size.height - 0.5;
+          canvas.drawLine(Offset(0, y), Offset(size.width, y), gridPaint);
+        }
+      }
+    } else {
+      final basePaint = Paint()..color = baseBackgroundColor;
+      canvas.drawRect(Offset.zero & size, basePaint);
+
+      final rowPaint = Paint()..color = backgroundColor;
+      final gridPaint = Paint()
+        ..color = gridColor
+        ..strokeWidth = 1.0;
+      final bottomY = size.height - 0.5;
+
+      void paintUnmergedSegment(double startX, double endX) {
+        if (endX <= startX) {
+          return;
+        }
+        if (backgroundColor != baseBackgroundColor) {
+          canvas.drawRect(
+            Rect.fromLTRB(startX, 0.0, endX, size.height),
+            rowPaint,
+          );
+        }
+        if (showHorizontalLines) {
+          canvas.drawLine(
+            Offset(startX, bottomY),
+            Offset(endX, bottomY),
+            gridPaint,
+          );
+        }
+      }
+
+      if (checkboxWidth > 0) {
+        paintUnmergedSegment(0.0, checkboxWidth);
+      }
+      for (final c in columnIndices) {
+        if (c < columnWidths.length && !overlaid[c]) {
+          final colStart = columnOffsets[c];
+          paintUnmergedSegment(colStart, colStart + columnWidths[c]);
+        }
+      }
+
+      if (showVerticalLines) {
+        for (var i = 0; i < dividerOffsets.length; i++) {
+          final x = dividerOffsets[i] - 0.5;
+          if (x > 0 && x <= size.width) {
+            canvas.drawLine(Offset(x, 0), Offset(x, size.height), gridPaint);
+          }
+        }
+      }
+    }
+
+    if (drawLeftFreezeDivider || drawRightFreezeDivider) {
+      final freezePaint = Paint()
+        ..color = freezeDividerColor
+        ..strokeWidth = 1.0;
+      if (drawLeftFreezeDivider && size.width >= 1.0) {
+        canvas.drawLine(
+          const Offset(0.5, 0.0),
+          Offset(0.5, size.height),
+          freezePaint,
+        );
+      }
+      if (drawRightFreezeDivider && size.width >= 1.0) {
+        final rx = size.width - 0.5;
+        canvas.drawLine(
+          Offset(rx, 0.0),
+          Offset(rx, size.height),
+          freezePaint,
+        );
+      }
+    }
+
+    final dirty = dirtyColumns;
+    if (dirty != null && dirtyIndicatorSize > 0) {
+      final dirtyPaint = Paint()
+        ..color = dirtyIndicatorColor
+        ..style = PaintingStyle.fill
+        ..isAntiAlias = true;
+      final tri = dirtyIndicatorSize;
+      for (final c in columnIndices) {
+        if (c >= dirty.length ||
+            c >= columnOffsets.length ||
+            !dirty[c] ||
+            (overlaid != null && overlaid[c])) {
+          continue;
+        }
+        final left = columnOffsets[c];
+        final path = Path()
+          ..moveTo(left, 0.0)
+          ..lineTo(left + tri, 0.0)
+          ..lineTo(left, tri)
+          ..close();
+        canvas.drawPath(path, dirtyPaint);
+      }
+    }
+
+    final focusColor = focusBorderColor;
+    if (focusColor != null && size.width > 2 && size.height > 2) {
+      final focusPaint = Paint()
+        ..color = focusColor
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.0;
+      final leftX = drawLeftFocusEdge ? 0.5 : 0.0;
+      final rightX = drawRightFocusEdge ? size.width - 0.5 : size.width;
+      canvas
+        ..drawLine(Offset(leftX, 0.5), Offset(rightX, 0.5), focusPaint)
+        ..drawLine(
+          Offset(leftX, size.height - 0.5),
+          Offset(rightX, size.height - 0.5),
+          focusPaint,
+        );
+      if (drawLeftFocusEdge) {
+        canvas.drawLine(
+          const Offset(0.5, 0.5),
+          Offset(0.5, size.height - 0.5),
+          focusPaint,
+        );
+      }
+      if (drawRightFocusEdge) {
+        canvas.drawLine(
+          Offset(size.width - 0.5, 0.5),
+          Offset(size.width - 0.5, size.height - 0.5),
+          focusPaint,
+        );
+      }
+    }
+
+    final focusCol = focusedColumnIndex;
+    if (focusCol != null &&
+        focusCol >= 0 &&
+        focusCol < columnWidths.length &&
+        (overlaid == null || !overlaid[focusCol]) &&
+        size.height > 2) {
+      final cellW = columnWidths[focusCol];
+      if (cellW > 2) {
+        final cellPaint = Paint()
+          ..color = focusedCellBorderColor
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.5;
+        canvas.drawRect(
+          Rect.fromLTWH(
+            columnOffsets[focusCol] + 0.75,
+            0.75,
+            cellW - 1.5,
+            size.height - 1.5,
+          ),
+          cellPaint,
+        );
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _DensePinnedRowStripPainter oldDelegate) =>
+      oldDelegate.baseBackgroundColor != baseBackgroundColor ||
+      oldDelegate.backgroundColor != backgroundColor ||
+      oldDelegate.gridColor != gridColor ||
+      oldDelegate.freezeDividerColor != freezeDividerColor ||
+      oldDelegate.drawLeftFreezeDivider != drawLeftFreezeDivider ||
+      oldDelegate.drawRightFreezeDivider != drawRightFreezeDivider ||
+      oldDelegate.drawLeftFocusEdge != drawLeftFocusEdge ||
+      oldDelegate.drawRightFocusEdge != drawRightFocusEdge ||
+      oldDelegate.focusBorderColor != focusBorderColor ||
+      oldDelegate.focusedColumnIndex != focusedColumnIndex ||
+      oldDelegate.focusedCellBorderColor != focusedCellBorderColor ||
+      oldDelegate.dirtyIndicatorColor != dirtyIndicatorColor ||
+      oldDelegate.dirtyIndicatorSize != dirtyIndicatorSize ||
+      oldDelegate.checkboxWidth != checkboxWidth ||
+      oldDelegate.showVerticalLines != showVerticalLines ||
+      oldDelegate.showHorizontalLines != showHorizontalLines ||
+      !_intListEquals(oldDelegate.columnIndices, columnIndices) ||
+      !_boolListEquals(oldDelegate.dirtyColumns, dirtyColumns) ||
+      !_boolListEquals(oldDelegate.overlaidColumns, overlaidColumns) ||
+      !_doubleListEquals(oldDelegate.columnOffsets, columnOffsets) ||
+      !_doubleListEquals(oldDelegate.columnWidths, columnWidths) ||
+      !_doubleListEquals(oldDelegate.dividerOffsets, dividerOffsets);
 }
 
 class _DenseHeaderGridPainter extends CustomPainter {
@@ -3125,10 +4634,12 @@ class _DenseMergedCellPainter extends CustomPainter {
     required this.isDirty,
     required this.dirtyIndicatorColor,
     required this.dirtyIndicatorSize,
+    this.rightBorderColor,
   });
 
   final Color backgroundColor;
   final Color gridColor;
+  final Color? rightBorderColor;
   final bool drawRightBorder;
   final bool drawBottomBorder;
   final bool isDirty;
@@ -3154,18 +4665,19 @@ class _DenseMergedCellPainter extends CustomPainter {
       canvas.drawPath(path, dirtyPaint);
     }
 
-    if (drawRightBorder || drawBottomBorder) {
-      final borderPaint = Paint()
+    if (drawRightBorder && size.width >= 1.0) {
+      final rightPaint = Paint()
+        ..color = rightBorderColor ?? gridColor
+        ..strokeWidth = 1.0;
+      final rx = size.width - 0.5;
+      canvas.drawLine(Offset(rx, 0.0), Offset(rx, size.height), rightPaint);
+    }
+    if (drawBottomBorder && size.height >= 1.0) {
+      final bottomPaint = Paint()
         ..color = gridColor
         ..strokeWidth = 1.0;
-      if (drawRightBorder && size.width >= 1.0) {
-        final rx = size.width - 0.5;
-        canvas.drawLine(Offset(rx, 0.0), Offset(rx, size.height), borderPaint);
-      }
-      if (drawBottomBorder && size.height >= 1.0) {
-        final by = size.height - 0.5;
-        canvas.drawLine(Offset(0.0, by), Offset(size.width, by), borderPaint);
-      }
+      final by = size.height - 0.5;
+      canvas.drawLine(Offset(0.0, by), Offset(size.width, by), bottomPaint);
     }
   }
 
@@ -3173,6 +4685,7 @@ class _DenseMergedCellPainter extends CustomPainter {
   bool shouldRepaint(covariant _DenseMergedCellPainter oldDelegate) =>
       oldDelegate.backgroundColor != backgroundColor ||
       oldDelegate.gridColor != gridColor ||
+      oldDelegate.rightBorderColor != rightBorderColor ||
       oldDelegate.drawRightBorder != drawRightBorder ||
       oldDelegate.drawBottomBorder != drawBottomBorder ||
       oldDelegate.isDirty != isDirty ||
@@ -3365,6 +4878,21 @@ bool _boolListEquals(List<bool>? a, List<bool>? b) {
     return true;
   }
   if (a == null || b == null || a.length != b.length) {
+    return false;
+  }
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool _intListEquals(List<int> a, List<int> b) {
+  if (identical(a, b)) {
+    return true;
+  }
+  if (a.length != b.length) {
     return false;
   }
   for (var i = 0; i < a.length; i++) {

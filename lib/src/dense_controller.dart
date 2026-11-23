@@ -69,6 +69,7 @@ class DenseTableController extends ChangeNotifier {
   Object? _editingRowId;
   String? _editingError;
 
+  Object? _delegateOwner;
   void Function(int visualIndex, {Duration? duration, Curve curve})?
       _scrollToVisualRowDelegate;
   int? Function(int originalIndex)? _originalToVisualIndexDelegate;
@@ -1057,6 +1058,10 @@ class DenseTableController extends ChangeNotifier {
 
   /// Attaches viewport and inline-editing delegates from the mounted
   /// `DenseTable` state.
+  ///
+  /// Passing [owner] binds these delegates to the active state instance so an
+  /// unmounting predecessor during single-frame reparenting cannot detach the
+  /// newly mounted state's delegates.
   void attachTableDelegates({
     required void Function(int visualIndex, {Duration? duration, Curve curve})
         scrollToVisualRow,
@@ -1064,7 +1069,9 @@ class DenseTableController extends ChangeNotifier {
     bool Function(int originalRowIndex, int columnIndex)? startEditing,
     bool Function([String? overrideText])? commitEditing,
     VoidCallback? cancelEditing,
+    Object? owner,
   }) {
+    _delegateOwner = owner;
     _scrollToVisualRowDelegate = scrollToVisualRow;
     _originalToVisualIndexDelegate = originalToVisualIndex;
     _startEditingDelegate = startEditing;
@@ -1073,7 +1080,17 @@ class DenseTableController extends ChangeNotifier {
   }
 
   /// Detaches viewport delegates when `DenseTable` unmounts or swaps controllers.
-  void detachTableDelegates() {
+  ///
+  /// When [owner] is supplied and does not match the currently attached owner,
+  /// this call is a no-op so single-frame widget reparenting preserves the live
+  /// mounted state's delegates.
+  void detachTableDelegates([Object? owner]) {
+    if (owner != null &&
+        _delegateOwner != null &&
+        !identical(_delegateOwner, owner)) {
+      return;
+    }
+    _delegateOwner = null;
     _scrollToVisualRowDelegate = null;
     _originalToVisualIndexDelegate = null;
     _startEditingDelegate = null;

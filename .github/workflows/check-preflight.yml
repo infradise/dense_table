@@ -90,7 +90,7 @@ jobs:
         shell: bash
         run: |
           python3 - <<'PY'
-          import re, subprocess, sys
+          import re, subprocess, sys, unicodedata
           from pathlib import Path
 
           pubspec = Path('pubspec.yaml').read_text(encoding='utf-8')
@@ -147,6 +147,44 @@ jobs:
           )
           if mat_hits.stdout.strip():
               print('ERROR: Forbidden package:flutter/material.dart import detected:\n' + mat_hits.stdout)
+              sys.exit(1)
+
+          ex_analysis = Path('example/analysis_options.yaml').read_text(encoding='utf-8')
+          if re.search(r'^\s*include:\s*\.\./analysis_options\.yaml\s*$', ex_analysis, flags=re.M):
+              for forbidden_off in ('unawaited_futures', 'strict-casts', 'strict-inference', 'strict-raw-types', 'avoid_print'):
+                  if re.search(rf'^\s*{re.escape(forbidden_off)}\s*:\s*false\b', ex_analysis, flags=re.M):
+                      print(f'ERROR: example/analysis_options.yaml must not disable {forbidden_off}.')
+                      sys.exit(1)
+          else:
+              root_rules = set(re.findall(r'^\s*-\s+([a-z0-9_]+)\s*$', Path('analysis_options.yaml').read_text(encoding='utf-8'), flags=re.M))
+              ex_rules = set(re.findall(r'^\s*-\s+([a-z0-9_]+)\s*$', ex_analysis, flags=re.M))
+              for non_rule in ('build', 'windows', 'macos', 'linux', 'web', 'android', 'ios'):
+                  root_rules.discard(non_rule)
+                  ex_rules.discard(non_rule)
+              missing_lints = sorted(root_rules - ex_rules)
+              if missing_lints:
+                  print(f'ERROR: example/analysis_options.yaml is missing strict lints from root: {missing_lints}')
+                  sys.exit(1)
+
+          tracked_files = subprocess.run(
+              ['git', 'ls-files'],
+              capture_output=True, text=True, check=True
+          ).stdout.splitlines()
+          non_english_hits = []
+          for rel in tracked_files:
+              p = Path(rel)
+              if not p.is_file():
+                  continue
+              try:
+                  text = p.read_text(encoding='utf-8')
+              except UnicodeDecodeError:
+                  continue
+              for idx, line in enumerate(text.splitlines(), 1):
+                  if any(ord(ch) > 127 and unicodedata.category(ch).startswith('L') for ch in line):
+                      non_english_hits.append(f'{rel}:{idx}: {line}')
+                      break
+          if non_english_hits:
+              print('ERROR: Non-English text detected in repository:\n' + '\n'.join(non_english_hits))
               sys.exit(1)
 
           raw_matches = subprocess.run(
@@ -284,6 +322,17 @@ jobs:
           cl = Path('CHANGELOG.md').read_text(encoding='utf-8')
           if not re.search(rf'^##\s+\[?{re.escape(ver)}\]?\b', cl, flags=re.M):
               print(f'ERROR: CHANGELOG.md does not contain a "## {ver}" release heading.')
+              sys.exit(1)
+          readme = Path('README.md').read_text(encoding='utf-8')
+          if f'`dense_table` `{ver}`' not in readme:
+              print(f'ERROR: README.md Comparison header does not reference `dense_table` `{ver}`.')
+              sys.exit(1)
+          if f'dense_table: ^{ver}' not in readme:
+              print(f'ERROR: README.md Installation snippet does not reference dense_table: ^{ver}.')
+              sys.exit(1)
+          ex_readme = Path('example/README.md').read_text(encoding='utf-8')
+          if f'`dense_table` `{ver}`' not in ex_readme:
+              print(f'ERROR: example/README.md does not reference `dense_table` `{ver}`.')
               sys.exit(1)
           PY
 

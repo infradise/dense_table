@@ -3,9 +3,10 @@
 ///
 /// Engineered for desktop IDEs, cloud consoles, database viewers, and web
 /// dashboards requiring `O(1)` fixed-extent virtualization across 100,000+
-/// rows alongside spreadsheet-style inline cell editing, virtualized `RowSpan`
-/// merging, resizable columns, sortable headers, single/multi-row selection,
-/// and full keyboard navigation.
+/// rows alongside pinned leading columns, per-column visibility and padding,
+/// spreadsheet-style inline cell editing, virtualized `RowSpan` merging,
+/// resizable columns, sortable headers, single/multi-row selection, clipboard
+/// copy, and full keyboard navigation.
 library;
 
 export 'src/dense_column.dart';

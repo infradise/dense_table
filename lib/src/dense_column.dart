@@ -311,6 +311,66 @@ typedef DenseSortIconBuilder = Widget Function(
   DenseSortDirection? direction,
 );
 
+/// Signature for extracting the plain-text string copied to the clipboard for
+/// `(rowIndex, columnIndex)` in `DenseTable`.
+///
+/// Both [rowIndex] and [columnIndex] are zero-based logical indices
+/// (`0 <= rowIndex < rowCount`, `0 <= columnIndex < columnCount`).
+typedef DenseCopyValueBuilder = String Function(int rowIndex, int columnIndex);
+
+/// Immutable payload describing a clipboard copy action performed in
+/// `DenseTable`.
+///
+/// Emitted to [DenseCopyCallback] after `DenseTable` formats selected or
+/// focused cells into tab-separated text (`TSV`) and writes [text] to the
+/// system clipboard.
+@immutable
+class DenseCopyEvent {
+  /// Creates a [DenseCopyEvent] for [rowIndices], [columnIndices], and [text].
+  const DenseCopyEvent({
+    required this.rowIndices,
+    required this.columnIndices,
+    required this.text,
+  });
+
+  /// Original data row indices (`0 .. rowCount - 1`) included in the copied
+  /// snapshot, ordered as rendered in the table.
+  final List<int> rowIndices;
+
+  /// Logical column indices (`0 .. columnCount - 1`) included in the copied
+  /// snapshot, ordered from left to right and excluding hidden columns.
+  final List<int> columnIndices;
+
+  /// Plain-text `TSV` payload written to the system clipboard.
+  final String text;
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) {
+      return true;
+    }
+    return other is DenseCopyEvent &&
+        _intListEquals(other.rowIndices, rowIndices) &&
+        _intListEquals(other.columnIndices, columnIndices) &&
+        other.text == text;
+  }
+
+  @override
+  int get hashCode => Object.hash(
+        Object.hashAll(rowIndices),
+        Object.hashAll(columnIndices),
+        text,
+      );
+
+  @override
+  String toString() =>
+      'DenseCopyEvent(rowIndices: $rowIndices, columnIndices: $columnIndices, text: $text)';
+}
+
+/// Signature invoked after `DenseTable` copies cells to the system clipboard
+/// with the resulting [DenseCopyEvent].
+typedef DenseCopyCallback = void Function(DenseCopyEvent event);
+
 /// Describes a vertically merged cell spanning [rowSpan] consecutive visual
 /// rows starting at [startRow].
 @immutable
@@ -391,8 +451,10 @@ class DenseColumn {
     this.resizable = true,
     this.sortable = true,
     this.editable = false,
+    this.visible = true,
     this.initialSortDirection = DenseSortDirection.ascending,
     this.alignment = Alignment.centerLeft,
+    this.cellPadding,
     this.comparator,
     this.validator,
     this.editorBuilder,
@@ -427,11 +489,26 @@ class DenseColumn {
   /// Whether cells in this column support spreadsheet-style inline editing.
   final bool editable;
 
+  /// Whether this column is rendered in layout, header, body cells, keyboard
+  /// navigation, and clipboard copy without shifting logical column indices.
+  ///
+  /// Setting this to `false` hides the column visually while preserving the
+  /// zero-based logical column indices passed to `DenseTable` callbacks and
+  /// `DenseTableController` APIs.
+  final bool visible;
+
   /// Initial [DenseSortDirection] applied when this column is first clicked.
   final DenseSortDirection initialSortDirection;
 
   /// Alignment applied to cells and header content within this column.
   final AlignmentGeometry alignment;
+
+  /// Optional per-column padding overriding `DenseStyle.cellPadding` for this
+  /// column's header cell, body cells, merged vertical spans, and default
+  /// inline editor.
+  ///
+  /// When `null`, `DenseStyle.cellPadding` is used.
+  final EdgeInsetsGeometry? cellPadding;
 
   /// Optional custom comparator used when sorting by this column.
   final DenseCellComparator? comparator;
@@ -574,6 +651,21 @@ int _compareNaturalStrings(String a, String b) {
     return lenA.compareTo(lenB);
   }
   return a.compareTo(b);
+}
+
+bool _intListEquals(List<int> a, List<int> b) {
+  if (identical(a, b)) {
+    return true;
+  }
+  if (a.length != b.length) {
+    return false;
+  }
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) {
+      return false;
+    }
+  }
+  return true;
 }
 
 bool _isAsciiDigit(int codeUnit) => codeUnit >= 0x30 && codeUnit <= 0x39;

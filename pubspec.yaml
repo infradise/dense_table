@@ -1,6 +1,6 @@
 name: dense_table
 description: Zero-dependency virtualized data table and editable grid for Flutter. Renders 100,000+ rows with inline cell editing, RowSpan, sorting, resizing, and selection.
-version: 1.4.0
+version: 1.5.0
 homepage: https://github.com/infradise/dense_table
 repository: https://github.com/infradise/dense_table
 issue_tracker: https://github.com/infradise/dense_table/issues
